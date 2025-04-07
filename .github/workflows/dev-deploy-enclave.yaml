@@ -1,0 +1,25 @@
+on:
+  push:
+    paths:
+      - .github/workflows/dev-deploy-enclave.yml
+      - src/**
+      - Dockerfile
+      - enclave.toml
+
+name: Dev Deploy Enclave
+jobs:
+  deploy-enclave:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Dev Deploy Enclave
+        env:
+          EV_API_KEY: ${{ secrets.DEV_EV_API_KEY_WITH_ENCLAVE_DEPLOY_PERMISSION }}
+          EV_APP_UUID: ${{ secrets.DEV_EV_APP_UUID }}
+          EV_ENCLAVE_SIGNING_CERT: ${{ secrets.DEV_EV_ENCLAVE_SIGNING_CERT }}
+          EV_ENCLAVE_SIGNING_KEY: ${{ secrets.DEV_EV_ENCLAVE_SIGNING_KEY }}
+        run: |
+          curl https://cli.evervault.com/v4/install -sL | sh
+          echo "$EV_ENCLAVE_SIGNING_CERT" > cert.pem
+          echo "$EV_ENCLAVE_SIGNING_KEY" > key.pem
+          ev enclave deploy -v
