@@ -11,15 +11,8 @@ RUN cargo build --release
 FROM debian:bookworm-slim
 WORKDIR /app
 
-# Create a non-root user and group.
-RUN addgroup --system app && adduser --system --ingroup app app
-
 # Copy the built binary
 COPY --from=builder /app/target/release/yellowpages-proof-service /usr/local/bin/yellowpages-proof-service
-
-# Change ownership and switch to non-root user.
-RUN chown -R app:app /usr/local/bin/yellowpages-proof-service
-USER app
 
 # Expose the port (matches our server's port)
 EXPOSE 8008
