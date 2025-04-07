@@ -1,0 +1,16 @@
+# Ignore the target directory (build artifacts)
+target/
+
+# Exclude git metadata and version control files
+.git
+.gitignore
+
+# Exclude environment configuration files
+.env
+
+# Exclude editor/IDE configuration directories
+.vscode/
+.idea/
+
+# Exclude backup files
+*.rs.bk
