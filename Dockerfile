@@ -22,6 +22,6 @@ RUN chown -R app:app /usr/local/bin/yellowpages-proof-service
 USER app
 
 # Expose the port (matches our server's port)
-EXPOSE 3000
-# Run the binary.
-CMD ["yellowpages-proof-service"]
+EXPOSE 8008
+# Run the binary using absolute path
+ENTRYPOINT ["/usr/local/bin/yellowpages-proof-service"]
