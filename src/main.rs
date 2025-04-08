@@ -69,8 +69,8 @@ async fn get_attestation() -> impl IntoResponse {
     }
     
     // Extract the attestation document as bytes
-    let attestation_bytes = match response.bytes().await {
-        Ok(bytes) => bytes,
+    let attestation_doc = match response.text().await {
+        Ok(text) => text,
         Err(e) => {
             eprintln!("Error reading response body: {}", e);
             return (
@@ -85,19 +85,6 @@ async fn get_attestation() -> impl IntoResponse {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    
-    // Convert bytes to string (the attestation doc is already base64-encoded by Evervault)
-    // This conversion is necessary for JSON serialization
-    let attestation_doc = match String::from_utf8(attestation_bytes.to_vec()) {
-        Ok(doc) => doc,
-        Err(e) => {
-            eprintln!("Error converting attestation document to string: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to process attestation document".to_string(),
-            ).into_response();
-        }
-    };
     
     // Return the attestation doc and timestamp as JSON
     Json(AttestationResponse {
