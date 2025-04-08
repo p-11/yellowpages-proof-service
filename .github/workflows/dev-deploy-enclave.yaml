@@ -1,7 +1,7 @@
 on:
   push:
     paths:
-      - .github/workflows/dev-deploy-enclave.yml
+      - .github/workflows/dev-deploy-enclave.yaml
       - src/**
       - Dockerfile
       - enclave.toml
