@@ -45,7 +45,7 @@ async fn get_attestation() -> impl IntoResponse {
     // Send request to the attestation endpoint
     // When running as an Evervault Enclave, the attestation service is available at this endpoint
     let response = match client
-        .post("http://127.0.0.1/attestation-doc")
+        .post("http://127.0.0.1:9999/attestation-doc")
         .json(&request_body)
         .send()
         .await {
