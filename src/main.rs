@@ -12,8 +12,7 @@ use base64::{engine::general_purpose, Engine};
 
 #[derive(Serialize, Deserialize)]
 struct AttestationRequest {
-    challenge: String,
-    nonce: String,
+    challenge: String
 }
 
 #[derive(Serialize)]
@@ -39,8 +38,7 @@ async fn get_attestation() -> impl IntoResponse {
     
     // Create the attestation request
     let request_body = AttestationRequest {
-        challenge: "hello-world".to_string(),
-        nonce: "123".to_string(),
+        challenge: "hello-world".to_string()
     };
     
     // Send request to the attestation endpoint
