@@ -5,6 +5,7 @@ on:
       - src/**
       - Dockerfile
       - enclave.toml
+      - Cargo.*
 
 name: Dev Deploy Enclave
 jobs:
