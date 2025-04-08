@@ -1,12 +1,14 @@
 use axum::{
     routing::get,
     Router,
-    http::{StatusCode, HeaderMap, HeaderValue},
+    http::StatusCode,
     response::IntoResponse,
+    Json,
 };
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
 use std::time::{SystemTime, UNIX_EPOCH};
+use base64::{engine::general_purpose, Engine};
 
 #[derive(Serialize, Deserialize)]
 struct AttestationRequest {
@@ -68,7 +70,7 @@ async fn get_attestation() -> impl IntoResponse {
     }
     
     // Extract the attestation document as bytes
-    let attestation_doc = match response.bytes().await {
+    let attestation_bytes = match response.bytes().await {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("Error reading response body: {}", e);
@@ -79,22 +81,18 @@ async fn get_attestation() -> impl IntoResponse {
         }
     };
     
+    // Base64 encode the attestation document
+    let attestation_doc = general_purpose::STANDARD.encode(attestation_bytes);
+    
     // Get current Unix timestamp in seconds
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
     
-    // Create headers
-    let mut headers = HeaderMap::new();
-    
-    // Add timestamp header, falling back to a default if creation fails
-    if let Ok(header_value) = HeaderValue::from_str(&timestamp.to_string()) {
-        headers.insert("X-Attestation-Timestamp", header_value);
-    } else {
-        eprintln!("Failed to create timestamp header value");
-    }
-    
-    // Create the response with headers and body
-    (StatusCode::OK, headers, attestation_doc).into_response()
+    // Return the attestation doc and timestamp as JSON
+    Json(AttestationResponse {
+        attestation_doc,
+        timestamp,
+    }).into_response()
 }
