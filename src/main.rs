@@ -1,9 +1,8 @@
 use axum::{
     routing::get,
     Router,
-    http::StatusCode,
+    http::{StatusCode, HeaderMap, HeaderValue},
     response::IntoResponse,
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
@@ -69,8 +68,8 @@ async fn get_attestation() -> impl IntoResponse {
     }
     
     // Extract the attestation document as bytes
-    let attestation_doc = match response.text().await {
-        Ok(text) => text,
+    let attestation_doc = match response.bytes().await {
+        Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("Error reading response body: {}", e);
             return (
@@ -86,9 +85,16 @@ async fn get_attestation() -> impl IntoResponse {
         .unwrap_or_default()
         .as_secs();
     
-    // Return the attestation doc and timestamp as JSON
-    Json(AttestationResponse {
-        attestation_doc,
-        timestamp,
-    }).into_response()
+    // Create headers
+    let mut headers = HeaderMap::new();
+    
+    // Add timestamp header, falling back to a default if creation fails
+    if let Ok(header_value) = HeaderValue::from_str(&timestamp.to_string()) {
+        headers.insert("X-Attestation-Timestamp", header_value);
+    } else {
+        eprintln!("Failed to create timestamp header value");
+    }
+    
+    // Create the response with headers and body
+    (StatusCode::OK, headers, attestation_doc).into_response()
 }
