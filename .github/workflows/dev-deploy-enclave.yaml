@@ -1,3 +1,5 @@
+name: Dev Deploy Enclave
+
 on:
   push:
     paths:
@@ -7,12 +9,27 @@ on:
       - enclave.toml
       - Cargo.*
 
-name: Dev Deploy Enclave
 jobs:
   deploy-enclave:
+    name: Dev Deploy Enclave
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Ensure Clippy is available
+        run: rustup component add clippy
+
+      - name: Ensure rustfmt is available
+        run: rustup component add rustfmt
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Check Rust formatting
+        run: cargo fmt -- --check
+
       - name: Dev Deploy Enclave
         env:
           EV_API_KEY: ${{ secrets.DEV_EV_API_KEY_WITH_ENCLAVE_DEPLOY_PERMISSION }}
