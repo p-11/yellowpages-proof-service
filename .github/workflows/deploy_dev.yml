@@ -1,4 +1,4 @@
-name: Dev Deploy Enclave
+name: Deploy Dev
 
 on:
   push:
@@ -10,9 +10,10 @@ on:
       - Cargo.*
 
 jobs:
-  deploy-enclave:
-    name: Dev Deploy Enclave
+  deploy:
+    name: Deploy Dev
     runs-on: ubuntu-latest
+    environment: development
 
     steps:
       - name: Checkout Repo
