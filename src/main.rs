@@ -5,7 +5,8 @@ use axum::{
     routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose};
-use bitcoin::key::Secp256k1;
+use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::{Message, Secp256k1};
 use bitcoin::sign_message::{MessageSignature, signed_msg_hash};
 use bitcoin::{Address, Network, address::AddressType};
 use reqwest::Client;
@@ -196,11 +197,35 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
 
     println!("Recovered public key: {}", recovered_public_key);
 
-    // Step 9: Verify that the recovered public key matches the address
+    // Step 9: Double-check signature validity
+    // Convert the recoverable signature to a standard signature
+    let standard_sig = signature.signature.to_standard();
+
+    // Create message from digest
+    let message = match Message::from_digest_slice(msg_hash.as_byte_array()) {
+        Ok(msg) => msg,
+        Err(e) => {
+            eprintln!("Failed to create message from hash: {}", e);
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+
+    // Use the standard signature for verification
+    match secp.verify_ecdsa(&message, &standard_sig, &recovered_public_key.inner) {
+        Ok(()) => {
+            println!("Signature is valid. Message successfully verified.");
+        }
+        Err(e) => {
+            eprintln!("Failed to verify signature: {}", e);
+            return StatusCode::BAD_REQUEST;
+        }
+    }
+
+    // Step 10: Verify that the recovered public key matches the address
     match address.address_type() {
         Some(AddressType::P2pkh) => {
             // Convert the recovered public key to a P2PKH address
-            let recovered_p2pkh = Address::p2pkh(&recovered_public_key, Network::Bitcoin);
+            let recovered_p2pkh = Address::p2pkh(recovered_public_key, Network::Bitcoin);
             println!("Recovered P2PKH address: {}", recovered_p2pkh);
 
             // Compare with the original address
