@@ -1,9 +1,11 @@
 use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::{get, post}};
 use base64::{Engine, engine::general_purpose};
-use bitcoin::sign_message::{MessageSignature, MessageSignatureError};
+use bitcoin::{Address, Network};
+use bitcoin::sign_message::MessageSignature;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::str::FromStr;
 
 #[derive(Serialize, Deserialize)]
 struct AttestationRequest {
@@ -112,7 +114,27 @@ async fn prove_message(
         proof_request.bitcoin_address, proof_request.bitcoin_signed_message
     );
     
-    // Step 1: Decode the base64 string
+    // Step 1: Parse the Bitcoin address
+    let parsed_address = match Address::from_str(&proof_request.bitcoin_address) {
+        Ok(addr) => addr,
+        Err(e) => {
+            eprintln!("Failed to parse Bitcoin address: {}", e);
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+    
+    // Step 2: Verify the address is for Bitcoin mainnet
+    let address = match parsed_address.require_network(Network::Bitcoin) {
+        Ok(bitcoin_addr) => bitcoin_addr,
+        Err(e) => {
+            eprintln!("Address is not for Bitcoin mainnet: {}", e);
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+    
+    println!("Successfully parsed Bitcoin address: {}", address);
+    
+    // Step 3: Decode the base64 string
     let decoded = match general_purpose::STANDARD.decode(&proof_request.bitcoin_signed_message) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -121,7 +143,7 @@ async fn prove_message(
         }
     };
     
-    // Step 2: Parse the MessageSignature
+    // Step 4: Parse the MessageSignature
     let signature = match MessageSignature::from_slice(&decoded) {
         Ok(sig) => sig,
         Err(e) => {
