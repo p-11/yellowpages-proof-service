@@ -114,7 +114,21 @@ async fn prove_message(
         proof_request.bitcoin_address, proof_request.bitcoin_signed_message
     );
     
-    // Step 1: Parse the Bitcoin address
+    // Step 1: Validate inputs
+    // Validate Bitcoin address length (basic check)
+    if proof_request.bitcoin_address.is_empty() || proof_request.bitcoin_address.len() > 100 {
+        eprintln!("Invalid address length: {}", proof_request.bitcoin_address.len());
+        return StatusCode::BAD_REQUEST;
+    }
+    
+    // Validate signature format
+    // Bitcoin signatures should be ~88 characters when base64 encoded
+    if proof_request.bitcoin_signed_message.len() < 50 || proof_request.bitcoin_signed_message.len() > 120 {
+        eprintln!("Invalid signature length: {}", proof_request.bitcoin_signed_message.len());
+        return StatusCode::BAD_REQUEST;
+    }
+    
+    // Step 2: Parse the Bitcoin address
     let parsed_address = match Address::from_str(&proof_request.bitcoin_address) {
         Ok(addr) => addr,
         Err(e) => {
@@ -123,7 +137,7 @@ async fn prove_message(
         }
     };
     
-    // Step 2: Verify the address is for Bitcoin mainnet
+    // Step 3: Verify the address is for Bitcoin mainnet
     let address = match parsed_address.require_network(Network::Bitcoin) {
         Ok(bitcoin_addr) => bitcoin_addr,
         Err(e) => {
@@ -134,7 +148,7 @@ async fn prove_message(
     
     println!("Successfully parsed Bitcoin address: {}", address);
     
-    // Step 3: Decode the base64 string
+    // Step 4: Decode the base64 string
     let decoded = match general_purpose::STANDARD.decode(&proof_request.bitcoin_signed_message) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -143,7 +157,7 @@ async fn prove_message(
         }
     };
     
-    // Step 4: Parse the MessageSignature
+    // Step 5: Parse the MessageSignature
     let signature = match MessageSignature::from_slice(&decoded) {
         Ok(sig) => sig,
         Err(e) => {
