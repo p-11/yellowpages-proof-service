@@ -6,7 +6,7 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose};
 use bitcoin::sign_message::MessageSignature;
-use bitcoin::{Address, Network};
+use bitcoin::{Address, Network, address::AddressType};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -157,9 +157,28 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
         }
     };
 
+    // Step 4: Verify the address is P2PKH
+    match address.address_type() {
+        Some(AddressType::P2pkh) => {
+            // This is what we want - P2PKH address
+            println!("Address type verified: P2PKH");
+        }
+        Some(other_type) => {
+            eprintln!(
+                "Invalid address type: {:?}, only P2PKH is supported",
+                other_type
+            );
+            return StatusCode::BAD_REQUEST;
+        }
+        None => {
+            eprintln!("Unknown or unsupported address type");
+            return StatusCode::BAD_REQUEST;
+        }
+    }
+
     println!("Successfully parsed Bitcoin address: {}", address);
 
-    // Step 4: Decode the base64 string
+    // Step 5: Decode the base64 string
     let decoded = match general_purpose::STANDARD.decode(&proof_request.bitcoin_signed_message) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -168,7 +187,7 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
         }
     };
 
-    // Step 5: Parse the MessageSignature
+    // Step 6: Parse the MessageSignature
     let signature = match MessageSignature::from_slice(&decoded) {
         Ok(sig) => sig,
         Err(e) => {
