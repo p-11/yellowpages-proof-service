@@ -158,11 +158,60 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
         }
     };
 
-    // Step 4: Verify the address is P2PKH
+    println!("Successfully parsed Bitcoin address: {}", address);
+
+    // Step 4: Decode the base64 string
+    let decoded = match general_purpose::STANDARD.decode(&proof_request.bitcoin_signed_message) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("Failed to decode base64 signature: {}", e);
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+
+    // Step 5: Parse the MessageSignature
+    let signature = match MessageSignature::from_slice(&decoded) {
+        Ok(sig) => sig,
+        Err(e) => {
+            eprintln!("Failed to parse message signature: {}", e);
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+
+    // Step 6: Create the message hash for "hello world"
+    let message = "hello world";
+    let msg_hash = signed_msg_hash(message);
+
+    // Step 7: Initialize secp256k1 context
+    let secp = Secp256k1::verification_only();
+
+    // Step 8: Recover the public key from the signature
+    let recovered_public_key = match signature.recover_pubkey(&secp, msg_hash) {
+        Ok(pubkey) => pubkey,
+        Err(e) => {
+            eprintln!("Failed to recover public key: {}", e);
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+
+    println!("Recovered public key: {}", recovered_public_key);
+
+    // Step 9: Verify that the recovered public key matches the address
     match address.address_type() {
         Some(AddressType::P2pkh) => {
-            // This is what we want - P2PKH address
-            println!("Address type verified: P2PKH");
+            // Convert the recovered public key to a P2PKH address
+            let recovered_p2pkh = Address::p2pkh(&recovered_public_key, Network::Bitcoin);
+            println!("Recovered P2PKH address: {}", recovered_p2pkh);
+
+            // Compare with the original address
+            if recovered_p2pkh == address {
+                println!("Address ownership verified: recovered public key matches the address");
+            } else {
+                eprintln!(
+                    "Address ownership verification failed: public key does not match the address"
+                );
+                return StatusCode::BAD_REQUEST;
+            }
         }
         Some(other_type) => {
             eprintln!(
@@ -177,45 +226,7 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
         }
     }
 
-    println!("Successfully parsed Bitcoin address: {}", address);
-
-    // Step 5: Decode the base64 string
-    let decoded = match general_purpose::STANDARD.decode(&proof_request.bitcoin_signed_message) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("Failed to decode base64 signature: {}", e);
-            return StatusCode::BAD_REQUEST;
-        }
-    };
-
-    // Step 6: Parse the MessageSignature
-    let signature = match MessageSignature::from_slice(&decoded) {
-        Ok(sig) => sig,
-        Err(e) => {
-            eprintln!("Failed to parse message signature: {}", e);
-            return StatusCode::BAD_REQUEST;
-        }
-    };
-
-    // Step 7: Create the message hash for "hello world"
-    let message = "hello world";
-    let msg_hash = signed_msg_hash(message);
-
-    // Step 8: Initialize secp256k1 context
-    let secp = Secp256k1::verification_only();
-
-    // Step 9: Recover the public key from the signature
-    let recovered_public_key = match signature.recover_pubkey(&secp, msg_hash) {
-        Ok(pubkey) => pubkey,
-        Err(e) => {
-            eprintln!("Failed to recover public key: {}", e);
-            return StatusCode::BAD_REQUEST;
-        }
-    };
-
-    println!("Recovered public key: {}", recovered_public_key);
-
     // Success path
-    println!("Successfully parsed message signature: {:?}", signature);
+    println!("Successfully verified message signature from {}", address);
     StatusCode::OK
 }
