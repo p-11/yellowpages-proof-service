@@ -34,7 +34,7 @@ async fn main() {
     // build our application with routes
     let app = Router::new()
         .route("/", get(get_attestation))
-        .route("/prove", post(prove_message));
+        .route("/prove", post(prove));
 
     println!("Server running on http://0.0.0.0:8008");
 
@@ -110,7 +110,7 @@ async fn get_attestation() -> impl IntoResponse {
     .into_response()
 }
 
-async fn prove_message(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
+async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     // Log the received data
     println!(
         "Received proof request - Address: {}, Signed message: {}",
