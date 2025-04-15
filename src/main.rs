@@ -1,5 +1,6 @@
 use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::{get, post}};
 use base64::{Engine, engine::general_purpose};
+use bitcoin::sign_message::{MessageSignature, MessageSignatureError};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -111,6 +112,25 @@ async fn prove_message(
         proof_request.bitcoin_address, proof_request.bitcoin_signed_message
     );
     
-    // Return a simple success response
+    // Step 1: Decode the base64 string
+    let decoded = match general_purpose::STANDARD.decode(&proof_request.bitcoin_signed_message) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("Failed to decode base64 signature: {}", e);
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+    
+    // Step 2: Parse the MessageSignature
+    let signature = match MessageSignature::from_slice(&decoded) {
+        Ok(sig) => sig,
+        Err(e) => {
+            eprintln!("Failed to parse message signature: {}", e);
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+    
+    // Success path
+    println!("Successfully parsed message signature: {:?}", signature);
     StatusCode::OK
 }
