@@ -5,7 +5,8 @@ use axum::{
     routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose};
-use bitcoin::sign_message::MessageSignature;
+use bitcoin::key::Secp256k1;
+use bitcoin::sign_message::{MessageSignature, signed_msg_hash};
 use bitcoin::{Address, Network, address::AddressType};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -195,6 +196,24 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
             return StatusCode::BAD_REQUEST;
         }
     };
+
+    // Step 7: Create the message hash for "hello world"
+    let message = "hello world";
+    let msg_hash = signed_msg_hash(message);
+
+    // Step 8: Initialize secp256k1 context
+    let secp = Secp256k1::verification_only();
+
+    // Step 9: Recover the public key from the signature
+    let recovered_public_key = match signature.recover_pubkey(&secp, msg_hash) {
+        Ok(pubkey) => pubkey,
+        Err(e) => {
+            eprintln!("Failed to recover public key: {}", e);
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+
+    println!("Recovered public key: {}", recovered_public_key);
 
     // Success path
     println!("Successfully parsed message signature: {:?}", signature);
