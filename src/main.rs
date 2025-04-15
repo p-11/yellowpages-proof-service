@@ -1,4 +1,4 @@
-use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::{get, post}};
 use base64::{Engine, engine::general_purpose};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -15,14 +15,22 @@ struct AttestationResponse {
     timestamp: u64,
 }
 
+#[derive(Deserialize)]
+struct ProofRequest {
+    bitcoin_signed_message: String,
+    bitcoin_address: String,
+}
+
 #[tokio::main]
 async fn main() {
-    // build our application with a single route
-    let app = Router::new().route("/", get(get_attestation));
+    // build our application with routes
+    let app = Router::new()
+        .route("/", get(get_attestation))
+        .route("/prove", post(prove_message));
 
     println!("Server running on http://0.0.0.0:8008");
 
-    // run our app with hyper, listening globally on port 3000
+    // run our app with hyper, listening globally on port 8008
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8008").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
@@ -92,4 +100,17 @@ async fn get_attestation() -> impl IntoResponse {
         timestamp,
     })
     .into_response()
+}
+
+async fn prove_message(
+    Json(proof_request): Json<ProofRequest>,
+) -> impl IntoResponse {
+    // Log the received data
+    println!(
+        "Received proof request - Address: {}, Signed message: {}",
+        proof_request.bitcoin_address, proof_request.bitcoin_signed_message
+    );
+    
+    // Return a simple success response
+    StatusCode::OK
 }
