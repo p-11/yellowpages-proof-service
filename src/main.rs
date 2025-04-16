@@ -140,8 +140,8 @@ async fn get_attestation() -> impl IntoResponse {
 async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     // Log the received data
     println!(
-        "Received proof request - Address: {}, Signed message: {}",
-        proof_request.bitcoin_address, proof_request.bitcoin_signed_message
+        "Received proof request - Address: {}",
+        proof_request.bitcoin_address,
     );
 
     // Step 1: Validate inputs
