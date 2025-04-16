@@ -255,12 +255,8 @@ fn verify_bitcoin_ownership(
     // Step 5: Verify that the recovered public key matches the address
     match address.address_type() {
         Some(AddressType::P2pkh) => {
-            // Convert the recovered public key to a P2PKH address
-            let recovered_p2pkh = Address::p2pkh(recovered_public_key, Network::Bitcoin);
-            println!("Recovered P2PKH address: {}", recovered_p2pkh);
-
-            // Compare with the original address
-            if recovered_p2pkh == *address {
+            // Check if the address is related to the recovered public key
+            if address.is_related_to_pubkey(&recovered_public_key) {
                 println!("Address ownership verified: recovered public key matches the address");
             } else {
                 bad_request!(
