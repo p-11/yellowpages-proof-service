@@ -192,11 +192,19 @@ fn validate_inputs(
         "Failed to parse Bitcoin address"
     );
 
-    // Verify the address is for Bitcoin mainnet
+    // Validate the address is for Bitcoin mainnet
     let address = ok_or_bad_request!(
         parsed_address.require_network(Network::Bitcoin),
         "Address is not for Bitcoin mainnet"
     );
+
+    // Validate the address is P2PKH
+    if !matches!(address.address_type(), Some(AddressType::P2pkh)) {
+        bad_request!(
+            "Invalid address type: {:?}, only P2PKH is supported",
+            address.address_type()
+        );
+    }
 
     println!("Successfully parsed Bitcoin address: {}", address);
 
@@ -219,14 +227,14 @@ fn verify_bitcoin_ownership(
     address: &Address,
     signature: &MessageSignature,
 ) -> Result<(), StatusCode> {
+    // Initialize secp256k1 context
+    let secp = Secp256k1::verification_only();
+
     // Step 1: Create the message hash for "hello world"
     let message = "hello world";
     let msg_hash = signed_msg_hash(message);
 
-    // Step 2: Initialize secp256k1 context
-    let secp = Secp256k1::verification_only();
-
-    // Step 3: Recover the public key from the signature
+    // Step 2: Recover the public key from the signature
     let recovered_public_key = ok_or_bad_request!(
         signature.recover_pubkey(&secp, msg_hash),
         "Failed to recover public key"
@@ -234,7 +242,7 @@ fn verify_bitcoin_ownership(
 
     println!("Recovered public key: {}", recovered_public_key);
 
-    // Step 4: Double-check signature validity
+    // Step 3: Double-check signature validity
     // Convert the recoverable signature to a standard signature
     let standard_sig = signature.signature.to_standard();
 
@@ -252,7 +260,7 @@ fn verify_bitcoin_ownership(
 
     println!("Signature is valid. Message successfully verified.");
 
-    // Step 5: Verify that the recovered public key matches the address
+    // Step 4: Verify that the recovered public key matches the address
     match address.address_type() {
         Some(AddressType::P2pkh) => {
             // Check if the address is related to the recovered public key
@@ -264,14 +272,11 @@ fn verify_bitcoin_ownership(
                 );
             }
         }
-        Some(other_type) => {
+        other_type => {
             bad_request!(
                 "Invalid address type: {:?}, only P2PKH is supported",
                 other_type
             );
-        }
-        None => {
-            bad_request!("Unknown or unsupported address type");
         }
     }
 
