@@ -283,3 +283,167 @@ fn verify_bitcoin_ownership(
     println!("Successfully verified Bitcoin ownership for {}", address);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Constants for test data - these will be replaced with real data
+    const VALID_BITCOIN_ADDRESS: &str = "1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm"; // P2PKH address
+    const VALID_SIGNATURE: &str =
+        "IE1Eu4G/OO+hPFd//epm6mNy6EXoYmzY2k9Dw4mdDRkjL9wYE7GPFcFN6U38tpsBUXZlNVBZRSeLrbjrgZnkJ1I="; // Signature for "hello world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS`
+    const INVALID_SIGNATURE: &str =
+        "IHHwE2wSfJU3Ej5CQA0c8YZIBBl9/knLNfwzOxFMQ3fqZNStxzkma0Jwko+T7JMAGIQqP5d9J2PcQuToq5QZAhk="; // Signature for "goodbye world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS`
+    const NON_P2PKH_ADDRESS: &str = "bc1quylm4dkc4kn8grnnwgzhark2uv704pmkjz4vpp"; // non-P2PKH address
+    const INVALID_ADDRESS: &str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7Divf"; // Malformed address
+
+    #[test]
+    fn test_validate_inputs_valid_data() {
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
+            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+        };
+
+        let result = validate_inputs(&proof_request);
+        assert!(result.is_ok(), "Validation should pass with valid inputs");
+    }
+
+    #[test]
+    fn test_validate_inputs_empty_address() {
+        let proof_request = ProofRequest {
+            bitcoin_address: "".to_string(),
+            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+        };
+
+        let result = validate_inputs(&proof_request);
+        assert!(result.is_err(), "Validation should fail with empty address");
+    }
+
+    #[test]
+    fn test_validate_inputs_invalid_address() {
+        let proof_request = ProofRequest {
+            bitcoin_address: INVALID_ADDRESS.to_string(),
+            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+        };
+
+        let result = validate_inputs(&proof_request);
+        assert!(
+            result.is_err(),
+            "Validation should fail with invalid address"
+        );
+    }
+
+    #[test]
+    fn test_validate_inputs_non_p2pkh_address() {
+        let proof_request = ProofRequest {
+            bitcoin_address: NON_P2PKH_ADDRESS.to_string(),
+            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+        };
+
+        let result = validate_inputs(&proof_request);
+        assert!(
+            result.is_err(),
+            "Validation should fail with non-P2PKH address"
+        );
+    }
+
+    #[test]
+    fn test_validate_inputs_short_signature() {
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
+            bitcoin_signed_message: "TooShort".to_string(),
+        };
+
+        let result = validate_inputs(&proof_request);
+        assert!(
+            result.is_err(),
+            "Validation should fail with short signature"
+        );
+    }
+
+    #[test]
+    fn test_validate_inputs_long_signature() {
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
+            bitcoin_signed_message: "a".repeat(150), // Very long signature
+        };
+
+        let result = validate_inputs(&proof_request);
+        assert!(
+            result.is_err(),
+            "Validation should fail with long signature"
+        );
+    }
+
+    #[test]
+    fn test_validate_inputs_invalid_base64() {
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
+            bitcoin_signed_message: "!!!Invalid@Base64***".repeat(5) + "MoreInvalidChars!@#$%^&*()", // Not valid base64 but long enough
+        };
+
+        let result = validate_inputs(&proof_request);
+        assert!(
+            result.is_err(),
+            "Validation should fail with invalid base64"
+        );
+    }
+
+    #[test]
+    fn test_verification_succeeds() {
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
+            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+        };
+
+        let (address, signature) = validate_inputs(&proof_request).unwrap();
+        let result = verify_bitcoin_ownership(&address, &signature);
+
+        assert!(
+            result.is_ok(),
+            "Verification should succeed with valid signature for address"
+        );
+    }
+
+    #[test]
+    fn test_verification_fails_wrong_message() {
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
+            bitcoin_signed_message: INVALID_SIGNATURE.to_string(), // Signature for different message
+        };
+
+        // Validation should pass since it's a valid signature format, just for the wrong message
+        let (address, signature) = validate_inputs(&proof_request).unwrap();
+
+        // Verification should fail because the signature is for a different message
+        let result = verify_bitcoin_ownership(&address, &signature);
+        assert!(
+            result.is_err(),
+            "Verification should fail with wrong message signature"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_end_to_end_success() {
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
+            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+        };
+
+        // Call the main function with the request
+        let response = prove(Json(proof_request)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_end_to_end_failure() {
+        let proof_request = ProofRequest {
+            bitcoin_address: INVALID_ADDRESS.to_string(),
+            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+        };
+
+        // This should fail during validation with a BAD_REQUEST
+        let response = prove(Json(proof_request)).await.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+}
