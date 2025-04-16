@@ -31,6 +31,31 @@ struct ProofRequest {
     bitcoin_address: String,
 }
 
+// Macro to handle the common pattern of error checking
+macro_rules! ok_or_bad_request {
+    ($expr:expr, $err_msg:expr) => {
+        match $expr {
+            Ok(val) => val,
+            Err(e) => {
+                eprintln!("{}: {}", $err_msg, e);
+                return StatusCode::BAD_REQUEST;
+            }
+        }
+    };
+}
+
+// Macro for simple error logging and returning BAD_REQUEST
+macro_rules! bad_request {
+    ($err_msg:expr) => {{
+        eprintln!($err_msg);
+        return StatusCode::BAD_REQUEST;
+    }};
+    ($fmt:expr, $($arg:tt)*) => {{
+        eprintln!($fmt, $($arg)*);
+        return StatusCode::BAD_REQUEST;
+    }};
+}
+
 #[tokio::main]
 async fn main() {
     // build our application with routes
@@ -122,11 +147,10 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     // Step 1: Validate inputs
     // Validate Bitcoin address length (basic check)
     if proof_request.bitcoin_address.is_empty() || proof_request.bitcoin_address.len() > 100 {
-        eprintln!(
+        bad_request!(
             "Invalid address length: {}",
             proof_request.bitcoin_address.len()
         );
-        return StatusCode::BAD_REQUEST;
     }
 
     // Validate signature format
@@ -134,50 +158,37 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     if proof_request.bitcoin_signed_message.len() < 50
         || proof_request.bitcoin_signed_message.len() > 120
     {
-        eprintln!(
+        bad_request!(
             "Invalid signature length: {}",
             proof_request.bitcoin_signed_message.len()
         );
-        return StatusCode::BAD_REQUEST;
     }
 
     // Step 2: Parse the Bitcoin address
-    let parsed_address = match Address::from_str(&proof_request.bitcoin_address) {
-        Ok(addr) => addr,
-        Err(e) => {
-            eprintln!("Failed to parse Bitcoin address: {}", e);
-            return StatusCode::BAD_REQUEST;
-        }
-    };
+    let parsed_address = ok_or_bad_request!(
+        Address::from_str(&proof_request.bitcoin_address),
+        "Failed to parse Bitcoin address"
+    );
 
     // Step 3: Verify the address is for Bitcoin mainnet
-    let address = match parsed_address.require_network(Network::Bitcoin) {
-        Ok(bitcoin_addr) => bitcoin_addr,
-        Err(e) => {
-            eprintln!("Address is not for Bitcoin mainnet: {}", e);
-            return StatusCode::BAD_REQUEST;
-        }
-    };
+    let address = ok_or_bad_request!(
+        parsed_address.require_network(Network::Bitcoin),
+        "Address is not for Bitcoin mainnet"
+    );
 
     println!("Successfully parsed Bitcoin address: {}", address);
 
     // Step 4: Decode the base64 string
-    let decoded = match general_purpose::STANDARD.decode(&proof_request.bitcoin_signed_message) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("Failed to decode base64 signature: {}", e);
-            return StatusCode::BAD_REQUEST;
-        }
-    };
+    let decoded = ok_or_bad_request!(
+        general_purpose::STANDARD.decode(&proof_request.bitcoin_signed_message),
+        "Failed to decode base64 signature"
+    );
 
     // Step 5: Parse the MessageSignature
-    let signature = match MessageSignature::from_slice(&decoded) {
-        Ok(sig) => sig,
-        Err(e) => {
-            eprintln!("Failed to parse message signature: {}", e);
-            return StatusCode::BAD_REQUEST;
-        }
-    };
+    let signature = ok_or_bad_request!(
+        MessageSignature::from_slice(&decoded),
+        "Failed to parse message signature"
+    );
 
     // Step 6: Create the message hash for "hello world"
     let message = "hello world";
@@ -187,13 +198,10 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     let secp = Secp256k1::verification_only();
 
     // Step 8: Recover the public key from the signature
-    let recovered_public_key = match signature.recover_pubkey(&secp, msg_hash) {
-        Ok(pubkey) => pubkey,
-        Err(e) => {
-            eprintln!("Failed to recover public key: {}", e);
-            return StatusCode::BAD_REQUEST;
-        }
-    };
+    let recovered_public_key = ok_or_bad_request!(
+        signature.recover_pubkey(&secp, msg_hash),
+        "Failed to recover public key"
+    );
 
     println!("Recovered public key: {}", recovered_public_key);
 
@@ -202,24 +210,18 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     let standard_sig = signature.signature.to_standard();
 
     // Create message from digest
-    let message = match Message::from_digest_slice(msg_hash.as_byte_array()) {
-        Ok(msg) => msg,
-        Err(e) => {
-            eprintln!("Failed to create message from hash: {}", e);
-            return StatusCode::BAD_REQUEST;
-        }
-    };
+    let message = ok_or_bad_request!(
+        Message::from_digest_slice(msg_hash.as_byte_array()),
+        "Failed to create message from hash"
+    );
 
     // Use the standard signature for verification
-    match secp.verify_ecdsa(&message, &standard_sig, &recovered_public_key.inner) {
-        Ok(()) => {
-            println!("Signature is valid. Message successfully verified.");
-        }
-        Err(e) => {
-            eprintln!("Failed to verify signature: {}", e);
-            return StatusCode::BAD_REQUEST;
-        }
-    }
+    ok_or_bad_request!(
+        secp.verify_ecdsa(&message, &standard_sig, &recovered_public_key.inner),
+        "Failed to verify signature"
+    );
+
+    println!("Signature is valid. Message successfully verified.");
 
     // Step 10: Verify that the recovered public key matches the address
     match address.address_type() {
@@ -232,22 +234,19 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
             if recovered_p2pkh == address {
                 println!("Address ownership verified: recovered public key matches the address");
             } else {
-                eprintln!(
+                bad_request!(
                     "Address ownership verification failed: public key does not match the address"
                 );
-                return StatusCode::BAD_REQUEST;
             }
         }
         Some(other_type) => {
-            eprintln!(
+            bad_request!(
                 "Invalid address type: {:?}, only P2PKH is supported",
                 other_type
             );
-            return StatusCode::BAD_REQUEST;
         }
         None => {
-            eprintln!("Unknown or unsupported address type");
-            return StatusCode::BAD_REQUEST;
+            bad_request!("Unknown or unsupported address type");
         }
     }
 
