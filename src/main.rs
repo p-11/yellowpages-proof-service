@@ -145,6 +145,30 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     );
 
     // Step 1: Validate inputs
+    let status = validate_inputs(&proof_request);
+    if status != StatusCode::OK {
+        return status;
+    }
+
+    // Step 2: Verify Bitcoin ownership
+    let status = verify_bitcoin_ownership(
+        &proof_request.bitcoin_address,
+        &proof_request.bitcoin_signed_message,
+    );
+    if status != StatusCode::OK {
+        return status;
+    }
+
+    // TODO: verify_ml_dsa_ownership()
+
+    // TODO: embed_addresses_in_proof()
+
+    // Success path
+    println!("All verifications completed successfully");
+    StatusCode::OK
+}
+
+fn validate_inputs(proof_request: &ProofRequest) -> StatusCode {
     // Validate Bitcoin address length (basic check)
     if proof_request.bitcoin_address.is_empty() || proof_request.bitcoin_address.len() > 100 {
         bad_request!(
@@ -164,13 +188,17 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
         );
     }
 
-    // Step 2: Parse the Bitcoin address
+    StatusCode::OK
+}
+
+fn verify_bitcoin_ownership(bitcoin_address: &str, bitcoin_signed_message: &str) -> StatusCode {
+    // Step 1: Parse the Bitcoin address
     let parsed_address = ok_or_bad_request!(
-        Address::from_str(&proof_request.bitcoin_address),
+        Address::from_str(bitcoin_address),
         "Failed to parse Bitcoin address"
     );
 
-    // Step 3: Verify the address is for Bitcoin mainnet
+    // Step 2: Verify the address is for Bitcoin mainnet
     let address = ok_or_bad_request!(
         parsed_address.require_network(Network::Bitcoin),
         "Address is not for Bitcoin mainnet"
@@ -178,26 +206,26 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
 
     println!("Successfully parsed Bitcoin address: {}", address);
 
-    // Step 4: Decode the base64 string
+    // Step 3: Decode the base64 string
     let decoded = ok_or_bad_request!(
-        general_purpose::STANDARD.decode(&proof_request.bitcoin_signed_message),
+        general_purpose::STANDARD.decode(bitcoin_signed_message),
         "Failed to decode base64 signature"
     );
 
-    // Step 5: Parse the MessageSignature
+    // Step 4: Parse the MessageSignature
     let signature = ok_or_bad_request!(
         MessageSignature::from_slice(&decoded),
         "Failed to parse message signature"
     );
 
-    // Step 6: Create the message hash for "hello world"
+    // Step 5: Create the message hash for "hello world"
     let message = "hello world";
     let msg_hash = signed_msg_hash(message);
 
-    // Step 7: Initialize secp256k1 context
+    // Step 6: Initialize secp256k1 context
     let secp = Secp256k1::verification_only();
 
-    // Step 8: Recover the public key from the signature
+    // Step 7: Recover the public key from the signature
     let recovered_public_key = ok_or_bad_request!(
         signature.recover_pubkey(&secp, msg_hash),
         "Failed to recover public key"
@@ -205,7 +233,7 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
 
     println!("Recovered public key: {}", recovered_public_key);
 
-    // Step 9: Double-check signature validity
+    // Step 8: Double-check signature validity
     // Convert the recoverable signature to a standard signature
     let standard_sig = signature.signature.to_standard();
 
@@ -223,7 +251,7 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
 
     println!("Signature is valid. Message successfully verified.");
 
-    // Step 10: Verify that the recovered public key matches the address
+    // Step 9: Verify that the recovered public key matches the address
     match address.address_type() {
         Some(AddressType::P2pkh) => {
             // Convert the recovered public key to a P2PKH address
@@ -250,7 +278,6 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
         }
     }
 
-    // Success path
-    println!("Successfully verified message signature from {}", address);
+    println!("Successfully verified Bitcoin ownership for {}", address);
     StatusCode::OK
 }
