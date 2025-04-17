@@ -9,8 +9,6 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{Message, Secp256k1};
 use bitcoin::sign_message::{MessageSignature, signed_msg_hash};
 use bitcoin::{Address, Network, address::AddressType};
-use hex;
-use oqs;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -186,9 +184,9 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     StatusCode::OK
 }
 
-fn validate_inputs<'a>(
+fn validate_inputs(
     proof_request: &ProofRequest,
-    verifier: &'a oqs::sig::Sig,
+    verifier: &oqs::sig::Sig,
 ) -> Result<
     (
         Address,
