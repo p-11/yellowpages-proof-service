@@ -9,8 +9,11 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{Message, Secp256k1};
 use bitcoin::sign_message::{MessageSignature, signed_msg_hash};
 use bitcoin::{Address, Network, address::AddressType};
+use hex;
+use oqs;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -29,6 +32,9 @@ struct AttestationResponse {
 struct ProofRequest {
     bitcoin_signed_message: String,
     bitcoin_address: String,
+    ml_dsa_signed_message: String,
+    ml_dsa_address: String,
+    ml_dsa_public_key: String,
 }
 
 // Macro to handle the common pattern of error checking
@@ -144,18 +150,34 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
         proof_request.bitcoin_address,
     );
 
-    // Step 1: Validate inputs
-    let (address, signature) = match validate_inputs(&proof_request) {
-        Ok(result) => result,
-        Err(status) => return status,
+    // Initialize ML-DSA 65 verifier first since we need it for validation
+    let sig_alg = oqs::sig::Algorithm::MlDsa65;
+    let verifier = match oqs::sig::Sig::new(sig_alg) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Failed to initialize ML-DSA verifier: {}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
     };
+
+    // Step 1: Validate inputs
+    let (address, signature, ml_dsa_address, ml_dsa_pub_key, ml_dsa_sig) =
+        match validate_inputs(&proof_request, &verifier) {
+            Ok(result) => result,
+            Err(status) => return status,
+        };
 
     // Step 2: Verify Bitcoin ownership
     if let Err(status) = verify_bitcoin_ownership(&address, &signature) {
         return status;
     }
 
-    // TODO: verify_ml_dsa_ownership()
+    // Step 3: Verify ML-DSA ownership
+    if let Err(status) =
+        verify_ml_dsa_ownership(&ml_dsa_address, &ml_dsa_pub_key, &ml_dsa_sig, &verifier)
+    {
+        return status;
+    }
 
     // TODO: embed_addresses_in_proof()
 
@@ -164,9 +186,19 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     StatusCode::OK
 }
 
-fn validate_inputs(
+fn validate_inputs<'a>(
     proof_request: &ProofRequest,
-) -> Result<(Address, MessageSignature), StatusCode> {
+    verifier: &'a oqs::sig::Sig,
+) -> Result<
+    (
+        Address,
+        MessageSignature,
+        Vec<u8>,
+        oqs::sig::PublicKey,
+        oqs::sig::Signature,
+    ),
+    StatusCode,
+> {
     // Validate Bitcoin address length
     if proof_request.bitcoin_address.is_empty() || proof_request.bitcoin_address.len() > 100 {
         bad_request!(
@@ -220,7 +252,62 @@ fn validate_inputs(
         "Failed to parse message signature"
     );
 
-    Ok((address, signature))
+    // Validate ML-DSA inputs
+    // Validate ML-DSA address format (should be a 64-character hex string representing a SHA256 hash)
+    if proof_request.ml_dsa_address.len() != 64
+        || !proof_request
+            .ml_dsa_address
+            .chars()
+            .all(|c| c.is_ascii_hexdigit())
+    {
+        bad_request!("Invalid ML-DSA address format");
+    }
+
+    // Convert the ML-DSA address from hex to bytes
+    let ml_dsa_addr_bytes = ok_or_bad_request!(
+        hex::decode(&proof_request.ml_dsa_address),
+        "Failed to decode ML-DSA address hex"
+    );
+
+    // Validate and decode ML-DSA signature (should be base64 encoded)
+    let ml_dsa_sig_bytes = ok_or_bad_request!(
+        general_purpose::STANDARD.decode(&proof_request.ml_dsa_signed_message),
+        "Failed to decode ML-DSA signature base64"
+    );
+
+    // Validate and decode ML-DSA public key (should be base64 encoded)
+    let ml_dsa_pub_key_bytes = ok_or_bad_request!(
+        general_purpose::STANDARD.decode(&proof_request.ml_dsa_public_key),
+        "Failed to decode ML-DSA public key base64"
+    );
+
+    // Convert bytes to proper types using the verifier's helper methods
+    let public_key_ref = match verifier.public_key_from_bytes(&ml_dsa_pub_key_bytes) {
+        Some(pk) => pk,
+        None => {
+            eprintln!("Failed to parse ML-DSA public key");
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
+
+    let signature_ref = match verifier.signature_from_bytes(&ml_dsa_sig_bytes) {
+        Some(sig) => sig,
+        None => {
+            eprintln!("Failed to parse ML-DSA signature");
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
+
+    println!("Successfully parsed ML-DSA inputs");
+
+    // Convert references to owned types
+    Ok((
+        address,
+        signature,
+        ml_dsa_addr_bytes,
+        public_key_ref.to_owned(),
+        signature_ref.to_owned(),
+    ))
 }
 
 fn verify_bitcoin_ownership(
@@ -284,11 +371,46 @@ fn verify_bitcoin_ownership(
     Ok(())
 }
 
+fn verify_ml_dsa_ownership(
+    address: &[u8],
+    public_key: &oqs::sig::PublicKey,
+    signature: &oqs::sig::Signature,
+    verifier: &oqs::sig::Sig,
+) -> Result<(), StatusCode> {
+    // Step 1: The message to verify is "hello world" (same as for Bitcoin)
+    let message = "hello world";
+    let message_bytes = message.as_bytes();
+
+    // Step 2: Verify the signature
+    ok_or_bad_request!(
+        verifier.verify(message_bytes, signature, public_key),
+        "Failed to verify ML-DSA signature"
+    );
+
+    println!("ML-DSA signature verified successfully");
+
+    // Step 3: Verify that the public key matches the address
+    // The address should be the SHA256 hash of the public key
+    let mut hasher = Sha256::new();
+    hasher.update(public_key.as_ref());
+    let computed_address = hasher.finalize().to_vec();
+
+    if computed_address == address {
+        println!("ML-DSA address ownership verified: public key hash matches the address");
+    } else {
+        bad_request!(
+            "ML-DSA address verification failed: public key hash does not match the address"
+        );
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Constants for test data - these will be replaced with real data
+    // Constants for test data
     const VALID_BITCOIN_ADDRESS: &str = "1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm"; // P2PKH address
     const VALID_SIGNATURE: &str =
         "IE1Eu4G/OO+hPFd//epm6mNy6EXoYmzY2k9Dw4mdDRkjL9wYE7GPFcFN6U38tpsBUXZlNVBZRSeLrbjrgZnkJ1I="; // Signature for "hello world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS`
@@ -297,14 +419,27 @@ mod tests {
     const NON_P2PKH_ADDRESS: &str = "bc1quylm4dkc4kn8grnnwgzhark2uv704pmkjz4vpp"; // non-P2PKH address
     const INVALID_ADDRESS: &str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7Divf"; // Malformed address
 
+    // ML-DSA test data - proper base64 encodings for test purposes
+    const VALID_ML_DSA_ADDRESS: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"; // Mock SHA256 hash (64 hex chars)
+    const VALID_ML_DSA_SIGNATURE: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8="; // Base64 encoded bytes (0-127)
+    const VALID_ML_DSA_PUBLIC_KEY: &str = "f4OxZX/x/FO5LcGBSKHWXfwtSx+j1ncoSt3SABJtkGk="; // Base64 encoded (example public key)
+    const INVALID_ML_DSA_ADDRESS: &str = "invalid_address"; // Not a 64-char hex string
+
     #[test]
     fn test_validate_inputs_valid_data() {
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
             bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(
+            &proof_request,
+            &oqs::sig::Sig::new(oqs::sig::Algorithm::MlDsa65).unwrap(),
+        );
         assert!(result.is_ok(), "Validation should pass with valid inputs");
     }
 
@@ -313,9 +448,15 @@ mod tests {
         let proof_request = ProofRequest {
             bitcoin_address: "".to_string(),
             bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(
+            &proof_request,
+            &oqs::sig::Sig::new(oqs::sig::Algorithm::MlDsa65).unwrap(),
+        );
         assert!(result.is_err(), "Validation should fail with empty address");
     }
 
@@ -324,9 +465,15 @@ mod tests {
         let proof_request = ProofRequest {
             bitcoin_address: INVALID_ADDRESS.to_string(),
             bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(
+            &proof_request,
+            &oqs::sig::Sig::new(oqs::sig::Algorithm::MlDsa65).unwrap(),
+        );
         assert!(
             result.is_err(),
             "Validation should fail with invalid address"
@@ -338,9 +485,15 @@ mod tests {
         let proof_request = ProofRequest {
             bitcoin_address: NON_P2PKH_ADDRESS.to_string(),
             bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(
+            &proof_request,
+            &oqs::sig::Sig::new(oqs::sig::Algorithm::MlDsa65).unwrap(),
+        );
         assert!(
             result.is_err(),
             "Validation should fail with non-P2PKH address"
@@ -352,9 +505,15 @@ mod tests {
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
             bitcoin_signed_message: "TooShort".to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(
+            &proof_request,
+            &oqs::sig::Sig::new(oqs::sig::Algorithm::MlDsa65).unwrap(),
+        );
         assert!(
             result.is_err(),
             "Validation should fail with short signature"
@@ -366,9 +525,15 @@ mod tests {
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
             bitcoin_signed_message: "a".repeat(150), // Very long signature
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(
+            &proof_request,
+            &oqs::sig::Sig::new(oqs::sig::Algorithm::MlDsa65).unwrap(),
+        );
         assert!(
             result.is_err(),
             "Validation should fail with long signature"
@@ -380,9 +545,15 @@ mod tests {
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
             bitcoin_signed_message: "!!!Invalid@Base64***".repeat(5) + "MoreInvalidChars!@#$%^&*()", // Not valid base64 but long enough
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(
+            &proof_request,
+            &oqs::sig::Sig::new(oqs::sig::Algorithm::MlDsa65).unwrap(),
+        );
         assert!(
             result.is_err(),
             "Validation should fail with invalid base64"
@@ -394,9 +565,16 @@ mod tests {
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
             bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let (address, signature) = validate_inputs(&proof_request).unwrap();
+        let (address, signature, _, _, _) = validate_inputs(
+            &proof_request,
+            &oqs::sig::Sig::new(oqs::sig::Algorithm::MlDsa65).unwrap(),
+        )
+        .unwrap();
         let result = verify_bitcoin_ownership(&address, &signature);
 
         assert!(
@@ -410,10 +588,17 @@ mod tests {
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
             bitcoin_signed_message: INVALID_SIGNATURE.to_string(), // Signature for different message
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
         // Validation should pass since it's a valid signature format, just for the wrong message
-        let (address, signature) = validate_inputs(&proof_request).unwrap();
+        let (address, signature, _, _, _) = validate_inputs(
+            &proof_request,
+            &oqs::sig::Sig::new(oqs::sig::Algorithm::MlDsa65).unwrap(),
+        )
+        .unwrap();
 
         // Verification should fail because the signature is for a different message
         let result = verify_bitcoin_ownership(&address, &signature);
@@ -423,11 +608,34 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_end_to_end_success() {
+    #[test]
+    fn test_validate_inputs_invalid_ml_dsa_address() {
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
             bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            ml_dsa_address: INVALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
+        };
+
+        let result = validate_inputs(
+            &proof_request,
+            &oqs::sig::Sig::new(oqs::sig::Algorithm::MlDsa65).unwrap(),
+        );
+        assert!(
+            result.is_err(),
+            "Validation should fail with invalid ML-DSA address"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_end_to_end_bitcoin_only() {
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
+            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
         // Call the main function with the request
@@ -440,6 +648,9 @@ mod tests {
         let proof_request = ProofRequest {
             bitcoin_address: INVALID_ADDRESS.to_string(),
             bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
         // This should fail during validation with a BAD_REQUEST
