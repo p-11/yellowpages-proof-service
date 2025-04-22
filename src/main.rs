@@ -144,13 +144,12 @@ async fn get_attestation() -> impl IntoResponse {
 async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     // Log the received data
     println!(
-        "Received proof request - Address: {}",
-        proof_request.bitcoin_address,
+        "Received proof request - Bitcoin Address: {}, ML-DSA Address: {}",
+        proof_request.bitcoin_address, proof_request.ml_dsa_address,
     );
 
     // Initialize ML-DSA 65 verifier first since we need it for validation
-    let sig_alg = oqs::sig::Algorithm::MlDsa65;
-    let verifier = match oqs::sig::Sig::new(sig_alg) {
+    let ml_dsa_verifier = match oqs::sig::Sig::new(oqs::sig::Algorithm::MlDsa65) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("Failed to initialize ML-DSA verifier: {}", e);
@@ -159,21 +158,29 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     };
 
     // Step 1: Validate inputs
-    let (address, signature, ml_dsa_address, ml_dsa_pub_key, ml_dsa_sig) =
-        match validate_inputs(&proof_request, &verifier) {
-            Ok(result) => result,
-            Err(status) => return status,
-        };
+    let (
+        bitcoin_address,
+        bitcoin_signed_message,
+        ml_dsa_address,
+        ml_dsa_pub_key,
+        ml_dsa_signed_message,
+    ) = match validate_inputs(&proof_request, &ml_dsa_verifier) {
+        Ok(result) => result,
+        Err(status) => return status,
+    };
 
     // Step 2: Verify Bitcoin ownership
-    if let Err(status) = verify_bitcoin_ownership(&address, &signature) {
+    if let Err(status) = verify_bitcoin_ownership(&bitcoin_address, &bitcoin_signed_message) {
         return status;
     }
 
     // Step 3: Verify ML-DSA ownership
-    if let Err(status) =
-        verify_ml_dsa_ownership(&ml_dsa_address, &ml_dsa_pub_key, &ml_dsa_sig, &verifier)
-    {
+    if let Err(status) = verify_ml_dsa_ownership(
+        &ml_dsa_address,
+        &ml_dsa_pub_key,
+        &ml_dsa_signed_message,
+        &ml_dsa_verifier,
+    ) {
         return status;
     }
 
@@ -262,13 +269,13 @@ fn validate_inputs(
     }
 
     // Convert the ML-DSA address from hex to bytes
-    let ml_dsa_addr_bytes = ok_or_bad_request!(
+    let ml_dsa_address = ok_or_bad_request!(
         hex::decode(&proof_request.ml_dsa_address),
         "Failed to decode ML-DSA address hex"
     );
 
     // Validate and decode ML-DSA signature (should be base64 encoded)
-    let ml_dsa_sig_bytes = ok_or_bad_request!(
+    let ml_dsa_signed_message_bytes = ok_or_bad_request!(
         general_purpose::STANDARD.decode(&proof_request.ml_dsa_signed_message),
         "Failed to decode ML-DSA signature base64"
     );
@@ -288,7 +295,7 @@ fn validate_inputs(
         }
     };
 
-    let signature_ref = match verifier.signature_from_bytes(&ml_dsa_sig_bytes) {
+    let ml_dsa_signed_message = match verifier.signature_from_bytes(&ml_dsa_signed_message_bytes) {
         Some(sig) => sig,
         None => {
             eprintln!("Failed to parse ML-DSA signature");
@@ -302,9 +309,9 @@ fn validate_inputs(
     Ok((
         address,
         signature,
-        ml_dsa_addr_bytes,
+        ml_dsa_address,
         public_key_ref.to_owned(),
-        signature_ref.to_owned(),
+        ml_dsa_signed_message.to_owned(),
     ))
 }
 
