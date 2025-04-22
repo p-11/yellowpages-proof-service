@@ -408,12 +408,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8d1add55171497b4705a648c6b583acafb01d58050a51727785f0b2c8e0a2b2"
 
 [[package]]
-name = "hex"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
-
-[[package]]
 name = "hex-conservative"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1924,7 +1918,6 @@ dependencies = [
  "axum",
  "base64",
  "bitcoin",
- "hex",
  "oqs",
  "reqwest",
  "serde",
