@@ -50,6 +50,19 @@ macro_rules! ok_or_bad_request {
     };
 }
 
+// Macro for handling Options that should return BAD_REQUEST if None
+macro_rules! some_or_bad_request {
+    ($expr:expr, $err_msg:expr) => {
+        match $expr {
+            Some(val) => val,
+            None => {
+                eprintln!("{}", $err_msg);
+                return Err(StatusCode::BAD_REQUEST);
+            }
+        }
+    };
+}
+
 // Macro for simple error logging and returning BAD_REQUEST
 macro_rules! bad_request {
     ($err_msg:expr) => {{
@@ -195,7 +208,7 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
 
 fn validate_inputs(
     proof_request: &ProofRequest,
-    verifier: &OqsSig,
+    ml_dsa_verifier: &OqsSig,
 ) -> Result<
     (
         BitcoinAddress,
@@ -288,22 +301,18 @@ fn validate_inputs(
         "Failed to decode ML-DSA public key base64"
     );
 
-    // Convert bytes to proper types using the verifier's helper methods
-    let ml_dsa_public_key = match verifier.public_key_from_bytes(&ml_dsa_public_key_bytes) {
-        Some(pk) => pk.to_owned(),
-        None => {
-            eprintln!("Failed to parse ML-DSA public key");
-            return Err(StatusCode::BAD_REQUEST);
-        }
-    };
+    // Convert bytes to proper types
+    let ml_dsa_public_key = some_or_bad_request!(
+        ml_dsa_verifier.public_key_from_bytes(&ml_dsa_public_key_bytes),
+        "Failed to parse ML-DSA public key"
+    )
+    .to_owned();
 
-    let ml_dsa_signed_message = match verifier.signature_from_bytes(&ml_dsa_signed_message_bytes) {
-        Some(sig) => sig.to_owned(),
-        None => {
-            eprintln!("Failed to parse ML-DSA signature");
-            return Err(StatusCode::BAD_REQUEST);
-        }
-    };
+    let ml_dsa_signed_message = some_or_bad_request!(
+        ml_dsa_verifier.signature_from_bytes(&ml_dsa_signed_message_bytes),
+        "Failed to parse ML-DSA signature"
+    )
+    .to_owned();
 
     println!("Successfully parsed ML-DSA inputs");
 
