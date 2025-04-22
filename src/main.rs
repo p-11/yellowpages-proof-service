@@ -5,13 +5,12 @@ use axum::{
     routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose};
-use bitcoin::hashes::Hash;
+use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
 use bitcoin::sign_message::{MessageSignature, signed_msg_hash};
 use bitcoin::{Address, Network, address::AddressType};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -396,9 +395,9 @@ fn verify_ml_dsa_ownership(
 
     // Step 3: Verify that the public key matches the address
     // The address should be the SHA256 hash of the public key
-    let mut hasher = Sha256::new();
-    hasher.update(public_key.as_ref());
-    let computed_address = hasher.finalize().to_vec();
+    let computed_address = sha256::Hash::hash(public_key.as_ref())
+        .to_byte_array()
+        .to_vec();
 
     if computed_address == address {
         println!("ML-DSA address ownership verified: public key hash matches the address");
