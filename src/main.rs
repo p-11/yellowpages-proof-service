@@ -161,7 +161,7 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
         bitcoin_address,
         bitcoin_signed_message,
         ml_dsa_address,
-        ml_dsa_pub_key,
+        ml_dsa_public_key,
         ml_dsa_signed_message,
     ) = match validate_inputs(&proof_request, &ml_dsa_verifier) {
         Ok(result) => result,
@@ -176,7 +176,7 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     // Step 3: Verify ML-DSA ownership
     if let Err(status) = verify_ml_dsa_ownership(
         &ml_dsa_address,
-        &ml_dsa_pub_key,
+        &ml_dsa_public_key,
         &ml_dsa_signed_message,
         &ml_dsa_verifier,
     ) {
@@ -223,36 +223,36 @@ fn validate_inputs(
     }
 
     // Parse the Bitcoin address
-    let parsed_address = ok_or_bad_request!(
+    let parsed_bitcoin_address = ok_or_bad_request!(
         Address::from_str(&proof_request.bitcoin_address),
         "Failed to parse Bitcoin address"
     );
 
     // Validate the address is for Bitcoin mainnet
-    let address = ok_or_bad_request!(
-        parsed_address.require_network(Network::Bitcoin),
+    let bitcoin_address = ok_or_bad_request!(
+        parsed_bitcoin_address.require_network(Network::Bitcoin),
         "Address is not for Bitcoin mainnet"
     );
 
     // Validate the address is P2PKH
-    if !matches!(address.address_type(), Some(AddressType::P2pkh)) {
+    if !matches!(bitcoin_address.address_type(), Some(AddressType::P2pkh)) {
         bad_request!(
             "Invalid address type: {:?}, only P2PKH is supported",
-            address.address_type()
+            bitcoin_address.address_type()
         );
     }
 
-    println!("Successfully parsed Bitcoin address: {}", address);
+    println!("Successfully parsed Bitcoin address: {}", bitcoin_address);
 
     // Decode the base64-encoded message
-    let decoded = ok_or_bad_request!(
+    let decoded_bitcoin_signed_message = ok_or_bad_request!(
         general_purpose::STANDARD.decode(&proof_request.bitcoin_signed_message),
         "Failed to decode base64 signature"
     );
 
     // Parse the decoded message
-    let signature = ok_or_bad_request!(
-        MessageSignature::from_slice(&decoded),
+    let bitcoin_signed_message = ok_or_bad_request!(
+        MessageSignature::from_slice(&decoded_bitcoin_signed_message),
         "Failed to parse message signature"
     );
 
@@ -280,14 +280,14 @@ fn validate_inputs(
     );
 
     // Validate and decode ML-DSA public key (should be base64 encoded)
-    let ml_dsa_pub_key_bytes = ok_or_bad_request!(
+    let ml_dsa_public_key_bytes = ok_or_bad_request!(
         general_purpose::STANDARD.decode(&proof_request.ml_dsa_public_key),
         "Failed to decode ML-DSA public key base64"
     );
 
     // Convert bytes to proper types using the verifier's helper methods
-    let public_key_ref = match verifier.public_key_from_bytes(&ml_dsa_pub_key_bytes) {
-        Some(pk) => pk,
+    let ml_dsa_public_key = match verifier.public_key_from_bytes(&ml_dsa_public_key_bytes) {
+        Some(pk) => pk.to_owned(),
         None => {
             eprintln!("Failed to parse ML-DSA public key");
             return Err(StatusCode::BAD_REQUEST);
@@ -295,7 +295,7 @@ fn validate_inputs(
     };
 
     let ml_dsa_signed_message = match verifier.signature_from_bytes(&ml_dsa_signed_message_bytes) {
-        Some(sig) => sig,
+        Some(sig) => sig.to_owned(),
         None => {
             eprintln!("Failed to parse ML-DSA signature");
             return Err(StatusCode::BAD_REQUEST);
@@ -306,11 +306,11 @@ fn validate_inputs(
 
     // Convert references to owned types
     Ok((
-        address,
-        signature,
+        bitcoin_address,
+        bitcoin_signed_message,
         ml_dsa_address,
-        public_key_ref.to_owned(),
-        ml_dsa_signed_message.to_owned(),
+        ml_dsa_public_key,
+        ml_dsa_signed_message,
     ))
 }
 
