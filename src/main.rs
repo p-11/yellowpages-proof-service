@@ -643,7 +643,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_end_to_end_bitcoin_only() {
+    async fn test_end_to_end() {
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
             bitcoin_signed_message: VALID_SIGNATURE.to_string(),
@@ -670,5 +670,109 @@ mod tests {
         // This should fail during validation with a BAD_REQUEST
         let response = prove(Json(proof_request)).await.into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_ml_dsa_verification_succeeds() {
+        let verifier = OqsSig::new(MlDsa65).unwrap();
+        let message = "hello world";
+
+        // Create a new keypair
+        let (public_key, secret_key) = verifier.keypair().unwrap();
+
+        // Sign the message
+        let signature = verifier.sign(message.as_bytes(), &secret_key).unwrap();
+
+        // Create the address from the public key
+        let address = MlDsaAddress {
+            public_key_hash: sha256::Hash::hash(public_key.as_ref()).to_byte_array(),
+        };
+
+        // Verify ownership
+        let result = verify_ml_dsa_ownership(&address, &public_key, &signature, &verifier);
+        assert!(
+            result.is_ok(),
+            "ML-DSA verification should succeed with valid inputs"
+        );
+    }
+
+    #[test]
+    fn test_ml_dsa_verification_fails_wrong_message() {
+        let verifier = OqsSig::new(MlDsa65).unwrap();
+        let wrong_message = "wrong message";
+
+        // Create a new keypair
+        let (public_key, secret_key) = verifier.keypair().unwrap();
+
+        // Sign the wrong message
+        let signature = verifier
+            .sign(wrong_message.as_bytes(), &secret_key)
+            .unwrap();
+
+        // Create the address from the public key
+        let address = MlDsaAddress {
+            public_key_hash: sha256::Hash::hash(public_key.as_ref()).to_byte_array(),
+        };
+
+        // Verify should fail because signature was for wrong message
+        let result = verify_ml_dsa_ownership(&address, &public_key, &signature, &verifier);
+        assert!(
+            result.is_err(),
+            "ML-DSA verification should fail with wrong message"
+        );
+    }
+
+    #[test]
+    fn test_ml_dsa_verification_fails_wrong_address() {
+        let verifier = OqsSig::new(MlDsa65).unwrap();
+        let message = "hello world";
+
+        // Create two keypairs
+        let (public_key1, secret_key1) = verifier.keypair().unwrap();
+        let (public_key2, _) = verifier.keypair().unwrap();
+
+        // Sign with first key
+        let signature = verifier.sign(message.as_bytes(), &secret_key1).unwrap();
+
+        // Create address from second public key
+        let wrong_address = MlDsaAddress {
+            public_key_hash: sha256::Hash::hash(public_key2.as_ref()).to_byte_array(),
+        };
+
+        // Verify should fail because address doesn't match the public key
+        let result = verify_ml_dsa_ownership(&wrong_address, &public_key1, &signature, &verifier);
+        assert!(
+            result.is_err(),
+            "ML-DSA verification should fail with mismatched address"
+        );
+    }
+
+    #[test]
+    fn test_ml_dsa_address_new_valid() {
+        let bytes = vec![0u8; 32];
+        let result = MlDsaAddress::new(bytes);
+        assert!(
+            result.is_ok(),
+            "Should create ML-DSA address from valid bytes"
+        );
+    }
+
+    #[test]
+    fn test_ml_dsa_address_new_invalid_length() {
+        let bytes = vec![0u8; 31]; // Too short
+        let result = MlDsaAddress::new(bytes);
+        assert!(result.is_err(), "Should fail with wrong length");
+        assert_eq!(
+            result.unwrap_err(),
+            "Invalid ML-DSA address length: expected 32 bytes, got 31"
+        );
+
+        let bytes = vec![0u8; 33]; // Too long
+        let result = MlDsaAddress::new(bytes);
+        assert!(result.is_err(), "Should fail with wrong length");
+        assert_eq!(
+            result.unwrap_err(),
+            "Invalid ML-DSA address length: expected 32 bytes, got 33"
+        );
     }
 }
