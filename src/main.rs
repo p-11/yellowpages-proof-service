@@ -240,22 +240,39 @@ fn validate_inputs(
     ),
     StatusCode,
 > {
-    // Validate Bitcoin address length
-    if proof_request.bitcoin_address.is_empty() || proof_request.bitcoin_address.len() > 100 {
+    // Validate that all required fields have reasonable lengths to avoid decoding large amounts of data
+    if proof_request.bitcoin_address.len() > 100 {
         bad_request!(
-            "Invalid address length: {}",
+            "Bitcoin address is too long: {}",
             proof_request.bitcoin_address.len()
         );
     }
 
-    // Validate signature length
-    // Bitcoin signatures should be ~88 characters when base64 encoded
-    if proof_request.bitcoin_signed_message.len() < 50
-        || proof_request.bitcoin_signed_message.len() > 120
-    {
+    if proof_request.bitcoin_signed_message.len() > 120 {
         bad_request!(
-            "Invalid signature length: {}",
+            "Invalid Bitcoin signature length: {}",
             proof_request.bitcoin_signed_message.len()
+        );
+    }
+
+    if proof_request.ml_dsa_address.len() > 100 {
+        bad_request!(
+            "ML-DSA address is too long: {}",
+            proof_request.ml_dsa_address.len()
+        );
+    }
+
+    if proof_request.ml_dsa_signed_message.len() > 5000 {
+        bad_request!(
+            "ML-DSA signature is too long: {}",
+            proof_request.ml_dsa_signed_message.len()
+        );
+    }
+
+    if proof_request.ml_dsa_public_key.len() > 3000 {
+        bad_request!(
+            "ML-DSA public key is too long: {}",
+            proof_request.ml_dsa_public_key.len()
         );
     }
 
@@ -292,12 +309,6 @@ fn validate_inputs(
         BitcoinMessageSignature::from_slice(&decoded_bitcoin_signed_message),
         "Failed to parse message signature"
     );
-
-    // Validate ML-DSA inputs
-    // Validate ML-DSA address format (should be base64 encoded)
-    if proof_request.ml_dsa_address.is_empty() {
-        bad_request!("ML-DSA address cannot be empty");
-    }
 
     // Convert the ML-DSA address from base64 to bytes
     let decoded_ml_dsa_address = ok_or_bad_request!(
