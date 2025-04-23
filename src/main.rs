@@ -37,6 +37,27 @@ struct ProofRequest {
     ml_dsa_public_key: String,
 }
 
+#[derive(Debug)]
+struct MlDsaAddress {
+    public_key_hash: [u8; 32],
+}
+
+impl MlDsaAddress {
+    fn new(bytes: Vec<u8>) -> Result<Self, String> {
+        if bytes.len() != 32 {
+            return Err(format!(
+                "Invalid ML-DSA address length: expected 32 bytes, got {}",
+                bytes.len()
+            ));
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Ok(MlDsaAddress {
+            public_key_hash: arr,
+        })
+    }
+}
+
 // Macro to handle the common pattern of error checking
 macro_rules! ok_or_bad_request {
     ($expr:expr, $err_msg:expr) => {
@@ -213,7 +234,7 @@ fn validate_inputs(
     (
         BitcoinAddress,
         BitcoinMessageSignature,
-        Vec<u8>,
+        MlDsaAddress,
         OqsPublicKey,
         OqsSignature,
     ),
@@ -279,18 +300,15 @@ fn validate_inputs(
     }
 
     // Convert the ML-DSA address from base64 to bytes
-    let ml_dsa_address = ok_or_bad_request!(
+    let decoded_ml_dsa_address = ok_or_bad_request!(
         general_purpose::STANDARD.decode(&proof_request.ml_dsa_address),
         "Failed to decode ML-DSA address base64"
     );
 
-    // Validate the address length (should be 32 bytes for SHA256)
-    if ml_dsa_address.len() != 32 {
-        bad_request!(
-            "Invalid ML-DSA address length: {}, expected 32 bytes",
-            ml_dsa_address.len()
-        );
-    }
+    let ml_dsa_address = ok_or_bad_request!(
+        MlDsaAddress::new(decoded_ml_dsa_address),
+        "Invalid ML-DSA address"
+    );
 
     // Decode ML-DSA signature (should be base64 encoded)
     let ml_dsa_signed_message_bytes = ok_or_bad_request!(
@@ -390,7 +408,7 @@ fn verify_bitcoin_ownership(
 }
 
 fn verify_ml_dsa_ownership(
-    address: &[u8],
+    address: &MlDsaAddress,
     public_key: &OqsPublicKey,
     signature: &OqsSignature,
     verifier: &OqsSig,
@@ -409,11 +427,9 @@ fn verify_ml_dsa_ownership(
 
     // Step 3: Verify that the public key matches the address
     // The address should be the SHA256 hash of the public key
-    let computed_address = sha256::Hash::hash(public_key.as_ref())
-        .to_byte_array()
-        .to_vec();
+    let computed_address = sha256::Hash::hash(public_key.as_ref()).to_byte_array();
 
-    if computed_address == address {
+    if computed_address == address.public_key_hash {
         println!("ML-DSA address ownership verified: public key hash matches the address");
     } else {
         bad_request!(
