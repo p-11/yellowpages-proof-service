@@ -3,7 +3,7 @@ name: Deploy Dev
 on:
   push:
     paths:
-      - .github/workflows/dev_dev.yaml
+      - .github/workflows/dev_dev.yml
       - src/**
       - Dockerfile
       - enclave.toml
