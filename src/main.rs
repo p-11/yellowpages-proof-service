@@ -43,7 +43,7 @@ struct MlDsaAddress {
 }
 
 impl MlDsaAddress {
-    fn new(bytes: Vec<u8>) -> Result<Self, String> {
+    fn new(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() != 32 {
             return Err(format!(
                 "Invalid ML-DSA address length: expected 32 bytes, got {}",
@@ -51,7 +51,7 @@ impl MlDsaAddress {
             ));
         }
         let mut arr = [0u8; 32];
-        arr.copy_from_slice(&bytes);
+        arr.copy_from_slice(bytes);
         Ok(MlDsaAddress {
             public_key_hash: arr,
         })
@@ -128,7 +128,7 @@ async fn get_attestation() -> impl IntoResponse {
     {
         Ok(resp) => resp,
         Err(e) => {
-            eprintln!("Error requesting attestation document: {}", e);
+            eprintln!("Error requesting attestation document: {e}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to fetch attestation document".to_string(),
@@ -151,7 +151,7 @@ async fn get_attestation() -> impl IntoResponse {
     let attestation_bytes = match response.bytes().await {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("Error reading response body: {}", e);
+            eprintln!("Error reading response body: {e}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to read attestation document".to_string(),
@@ -188,7 +188,7 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     let ml_dsa_verifier = match OqsSig::new(MlDsa44) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("Failed to initialize ML-DSA verifier: {}", e);
+            eprintln!("Failed to initialize ML-DSA verifier: {e}");
             return StatusCode::INTERNAL_SERVER_ERROR;
         }
     };
@@ -296,7 +296,7 @@ fn validate_inputs(
         );
     }
 
-    println!("Successfully parsed Bitcoin address: {}", bitcoin_address);
+    println!("Successfully parsed Bitcoin address: {bitcoin_address}");
 
     // Decode the base64-encoded message
     let decoded_bitcoin_signed_message = ok_or_bad_request!(
@@ -317,7 +317,7 @@ fn validate_inputs(
     );
 
     let ml_dsa_address = ok_or_bad_request!(
-        MlDsaAddress::new(decoded_ml_dsa_address),
+        MlDsaAddress::new(&decoded_ml_dsa_address),
         "Invalid ML-DSA address"
     );
 
@@ -374,7 +374,7 @@ fn verify_bitcoin_ownership(
         "Failed to recover public key"
     );
 
-    println!("Recovered public key: {}", recovered_public_key);
+    println!("Recovered public key: {recovered_public_key}");
 
     // Step 3: Double-check signature validity
     // Convert the recoverable signature to a standard signature
@@ -414,7 +414,7 @@ fn verify_bitcoin_ownership(
         }
     }
 
-    println!("Successfully verified Bitcoin ownership for {}", address);
+    println!("Successfully verified Bitcoin ownership for {address}");
     Ok(())
 }
 
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn test_validate_inputs_empty_address() {
         let proof_request = ProofRequest {
-            bitcoin_address: "".to_string(),
+            bitcoin_address: String::new(),
             bitcoin_signed_message: VALID_SIGNATURE.to_string(),
             ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
             ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
@@ -750,7 +750,7 @@ mod tests {
     #[test]
     fn test_ml_dsa_address_new_valid() {
         let bytes = vec![0u8; 32];
-        let result = MlDsaAddress::new(bytes);
+        let result = MlDsaAddress::new(&bytes);
         assert!(
             result.is_ok(),
             "Should create ML-DSA address from valid bytes"
@@ -760,7 +760,7 @@ mod tests {
     #[test]
     fn test_ml_dsa_address_new_invalid_length() {
         let bytes = vec![0u8; 31]; // Too short
-        let result = MlDsaAddress::new(bytes);
+        let result = MlDsaAddress::new(&bytes);
         assert!(result.is_err(), "Should fail with wrong length");
         assert_eq!(
             result.unwrap_err(),
@@ -768,7 +768,7 @@ mod tests {
         );
 
         let bytes = vec![0u8; 33]; // Too long
-        let result = MlDsaAddress::new(bytes);
+        let result = MlDsaAddress::new(&bytes);
         assert!(result.is_err(), "Should fail with wrong length");
         assert_eq!(
             result.unwrap_err(),

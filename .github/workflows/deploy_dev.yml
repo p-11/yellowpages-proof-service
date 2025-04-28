@@ -28,11 +28,14 @@ jobs:
       - name: Ensure rustfmt is available
         run: rustup component add rustfmt
 
-      # - name: Run Clippy
-      #   run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -W clippy::pedantic -D warnings
 
       - name: Check Rust formatting
         run: cargo fmt -- --check
+
+      - name: Run Rust tests
+        run: cargo test
 
       - name: Deploy Enclave
         env:
