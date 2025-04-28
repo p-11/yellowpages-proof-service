@@ -9,6 +9,7 @@ use oqs::sig::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::str::FromStr;
 
 #[derive(Serialize, Deserialize)]
@@ -49,6 +50,16 @@ impl MlDsaAddress {
         Ok(MlDsaAddress {
             public_key_hash: arr,
         })
+    }
+}
+
+impl fmt::Display for MlDsaAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            general_purpose::STANDARD.encode(self.public_key_hash)
+        )
     }
 }
 
@@ -419,11 +430,7 @@ async fn embed_addresses_in_proof(
     let client = Client::new();
 
     // Create the user data string by concatenating the addresses
-    let user_data = format!(
-        "{}:{}",
-        bitcoin_address,
-        general_purpose::STANDARD.encode(ml_dsa_address.public_key_hash)
-    );
+    let user_data = format!("{}:{}", bitcoin_address, ml_dsa_address);
 
     // Create the attestation request
     let request_body = AttestationRequest {
@@ -811,5 +818,14 @@ mod tests {
             result.unwrap_err(),
             "Invalid ML-DSA address length: expected 32 bytes, got 33"
         );
+    }
+
+    #[test]
+    fn test_mldsa_address_to_string() {
+        let decoded_ml_dsa_address = general_purpose::STANDARD
+            .decode(VALID_ML_DSA_ADDRESS)
+            .unwrap();
+        let ml_dsa_address = MlDsaAddress::new(decoded_ml_dsa_address).unwrap();
+        assert_eq!(ml_dsa_address.to_string(), VALID_ML_DSA_ADDRESS);
     }
 }
