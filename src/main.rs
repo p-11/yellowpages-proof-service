@@ -461,6 +461,19 @@ async fn embed_addresses_in_proof(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::routing::post;
+
+    // Mock handler for attestation requests
+    async fn mock_attestation_handler(
+        Json(_request): Json<AttestationRequest>,
+    ) -> impl IntoResponse {
+        let mock_attestation = b"mock_attestation_document_bytes";
+        (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+            mock_attestation,
+        )
+    }
 
     // Constants for test data
     const VALID_BITCOIN_ADDRESS: &str = "1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm"; // P2PKH address
@@ -651,6 +664,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_end_to_end() {
+        // Start mock attestation server
+        let mock_attestation_app =
+            Router::new().route("/attestation-doc", post(mock_attestation_handler));
+        let mock_attestation_listener = tokio::net::TcpListener::bind("127.0.0.1:9999")
+            .await
+            .unwrap();
+
+        // Spawn the mock server to run concurrently
+        tokio::spawn(async move {
+            axum::serve(mock_attestation_listener, mock_attestation_app)
+                .await
+                .unwrap();
+        });
+
+        // Give the server a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
             bitcoin_signed_message: VALID_SIGNATURE.to_string(),
