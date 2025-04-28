@@ -259,8 +259,12 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     let ml_dsa_verifier = match OqsSig::new(MlDsa44) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("Failed to initialize ML-DSA verifier: {e}");
-            return StatusCode::INTERNAL_SERVER_ERROR;
+            eprintln!("Failed to initialize ML-DSA verifier: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to initialize ML-DSA verifier",
+            )
+                .into_response();
         }
     };
 
@@ -273,12 +277,12 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
         ml_dsa_signed_message,
     ) = match validate_inputs(&proof_request, &ml_dsa_verifier) {
         Ok(result) => result,
-        Err(status) => return status,
+        Err(status) => return (status, "Input validation failed").into_response(),
     };
 
     // Step 2: Verify Bitcoin ownership
     if let Err(status) = verify_bitcoin_ownership(&bitcoin_address, &bitcoin_signed_message) {
-        return status;
+        return (status, "Bitcoin ownership verification failed").into_response();
     }
 
     // Step 3: Verify ML-DSA ownership
@@ -288,14 +292,21 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
         &ml_dsa_signed_message,
         &ml_dsa_verifier,
     ) {
-        return status;
+        return (status, "ML-DSA ownership verification failed").into_response();
     }
 
-    // TODO: embed_addresses_in_proof()
+    // Step 4: Get attestation document with embedded addresses
+    let attestation_doc = match embed_addresses_in_proof(&bitcoin_address, &ml_dsa_address).await {
+        Ok(doc) => doc,
+        Err(status) => return (status, "Failed to embed addresses in proof").into_response(),
+    };
 
-    // Success path
-    println!("All verifications completed successfully");
-    StatusCode::OK
+    // Return the attestation doc and timestamp as JSON
+    Json(AttestationResponse {
+        attestation_doc,
+        timestamp: 1234567890,
+    })
+    .into_response()
 }
 
 fn validate_inputs(
