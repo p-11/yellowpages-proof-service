@@ -10,7 +10,7 @@ use bitcoin::secp256k1::{Message, Secp256k1};
 use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_msg_hash};
 use bitcoin::{Address as BitcoinAddress, Network, address::AddressType};
 use oqs::sig::{
-    Algorithm::MlDsa65, PublicKey as OqsPublicKey, Sig as OqsSig, Signature as OqsSignature,
+    Algorithm::MlDsa44, PublicKey as OqsPublicKey, Sig as OqsSig, Signature as OqsSignature,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -184,8 +184,8 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
         proof_request.bitcoin_address, proof_request.ml_dsa_address,
     );
 
-    // Initialize ML-DSA 65 verifier first since we need it for validation
-    let ml_dsa_verifier = match OqsSig::new(MlDsa65) {
+    // Initialize ML-DSA 44 verifier first since we need it for validation
+    let ml_dsa_verifier = match OqsSig::new(MlDsa44) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("Failed to initialize ML-DSA verifier: {}", e);
@@ -465,9 +465,9 @@ mod tests {
     const INVALID_ADDRESS: &str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7Divf"; // Malformed address
 
     // ML-DSA test data
-    const VALID_ML_DSA_ADDRESS: &str = "0HBagXsWaZlQza38v/VgAofFNwnD1QOAyLHonIm1WhY="; // Base64-encoded SHA256 hash of ML-DSA public key generated using Noble post-quantum
-    const VALID_ML_DSA_SIGNATURE: &str = "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"; // signature created using Noble post-quantum
-    const VALID_ML_DSA_PUBLIC_KEY: &str = "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"; // Public key generated using Noble post-quantum
+    const VALID_ML_DSA_ADDRESS: &str = "YHUo9V2Od8JTXsNATpQONELI3Qhgs6hxbmUH/pwDEbQ="; // Base64-encoded SHA256 hash of ML-DSA public key generated using Noble post-quantum
+    const VALID_ML_DSA_SIGNATURE: &str = "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"; // signature created using Noble post-quantum
+    const VALID_ML_DSA_PUBLIC_KEY: &str = "Ttj/YnqXKud1qVz4ZeKC1ACSfwQK/E5Xu01iP4ZZ2Nc78UTdqlayxCdbWYxtM4T+fADNtbP2ogT1Yj8VLEIkfDrJZw6M6Jgz305NSeFz3nAG9tlVr9C0kvWbgQ48frvE3zLVdtAtkG8JcPZ1GvOW4lcK1/HlKV+mDXp5ghWuL/NXpMaA2IGMgmSU5mma4/BC73x7qNwQE8vV6pk91nxTXUC+ChQmnPAkxVpnk8PbZYeZK7N0oO8VtEuzewuvc6/rFWxRvi2QzAcFumDryXdf5pRZfCbsMM8hwW30lfnQSlgadXpS1SMcogF8m9qCvcerm81ioQoDKfmw+mh4nYZ3VSTC545J2Ahl0HX6mMQlkeax2lWEinT2J9wd+rzI5wB+3owEnZWA5iVZ0bjJlsHPt8rOpBVb4WTplMdxnaA1yvTaphbg8rd1YV+F2o8VHdaBWiRSC4siJCs8ssdOvEOr3OMwIBQjIlhMsrzuIQ45jNYXYn7UeG1JX1XfAO3+df0jZGj3NY/K7slrZmtUt97SDlH9UX+FMZFKRJXEKIAHNyzQjDUFkM6KlfXVDnIOAoa+JKbyczCetbDjP+E2qLCIKZrmTCd/YqbfiN+iUflnwQZNBlCraZDbdmMtJS5sC72A53GnjMytQBZH7nE+C5XH4/K4041a/uVDSaMkRQYoN2p4Fy7mS2+LKGZTZ+51OXNfGSyyqLkNku3+OwGgNcjWzUSGUSDh0fNA1D2D0Xe3HrA+um3b7CAPkjHuLdmLOrnp6BQFOu6h8cbZZ224x55IyJvdfGdzPWloJ3lLch3cuPjyZ+TkNGS54kTo8SA4uj0Fk8LrOoz8dVhGUdn0WgWSctvxIuCNW0Rh5dSF31FZt8/+pLIm3ysrhIcn66fmj1UNrYbomAqgYpUv+R62RxUGB3N/7Zedi1Ue9gkp9aO+Q0nnfXF1L4NwDJs2cEfTTCdQdlCeal4qHZOhcmazVT4AWXHQauluG4x3WNU0emxCkm6WytCBWLq1vso1JdbxYe90HFz7Fin1ZHed+Ablq7oDz0PtdE68fIFGMbPlEjaBNp5D8F+vkqr6214BDhqwJpkmK43Po/lGqSodenkVsGEojH+r3L/DuauCRrvEwEATs0ap4GX0XV5u7tRq5EMbOa5ibQGxcNThEpvEiy3Y6nlYt8D/JfVs/IuVQgXn0I9X+gfZR5LBs3HY3F8LPuEgUyVX4oaFB5vVEvsa7+fUP/xmmdjmO/PXDCZxptWV2qhWfy3TU6WbuntHLoRxIN1bdw7cNx0JNxUxlUJH6MBKK6U+IxNP9jdmpUfjhRLhrL14I8MfdXBYnlYOJv886z9HHxrecVEgX129ht4vKmxq5m7IA+o9pOnZWep2BWBLWfgoWIsQ1HcTCdRJuVu1leuz5mbKPDILUBPztrdKfuHqDWkqYRINZajKyJAR1UNwNJUCPPqMEYmyeDuiDAFgHlbn4BKXY45FOWedOvmrQkEMwzAa5GgZYUuwpZ3IYR3QG23vQGcM9Q5TdP/bA4H7yKk/fFE7CQV0CQ5B8fz12ndeATJiySL6XOYf2F4hd+uCjk5zHVzJG+aGCB1zuj+tCBlg1hvPIsWlkYPPmVga2Oa2pgb3+mvoq/0uoSsPo72fKuo7DeuZF09q2e/aoQfBwpJbMmMcltyHVq0IDO2W9DaCqw7TxDW2ousGsxqk/JcGX+UAXneIrx/bicSZArzxNkv/KbVo1hmLeS9uXLntWF5gZWKocg=="; // Public key generated using Noble post-quantum
     const INVALID_ML_DSA_ADDRESS: &str = "invalid_address";
 
     #[test]
@@ -480,7 +480,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa65).unwrap());
+        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
         assert!(result.is_ok(), "Validation should pass with valid inputs");
     }
 
@@ -494,7 +494,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa65).unwrap());
+        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
         assert!(result.is_err(), "Validation should fail with empty address");
     }
 
@@ -508,7 +508,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa65).unwrap());
+        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
         assert!(
             result.is_err(),
             "Validation should fail with invalid address"
@@ -525,7 +525,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa65).unwrap());
+        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
         assert!(
             result.is_err(),
             "Validation should fail with non-P2PKH address"
@@ -542,7 +542,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa65).unwrap());
+        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
         assert!(
             result.is_err(),
             "Validation should fail with short signature"
@@ -559,7 +559,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa65).unwrap());
+        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
         assert!(
             result.is_err(),
             "Validation should fail with long signature"
@@ -576,7 +576,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa65).unwrap());
+        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
         assert!(
             result.is_err(),
             "Validation should fail with invalid base64"
@@ -594,7 +594,7 @@ mod tests {
         };
 
         let (address, signature, _, _, _) =
-            validate_inputs(&proof_request, &OqsSig::new(MlDsa65).unwrap()).unwrap();
+            validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap()).unwrap();
         let result = verify_bitcoin_ownership(&address, &signature);
 
         assert!(
@@ -615,7 +615,7 @@ mod tests {
 
         // Validation should pass since it's a valid signature format, just for the wrong message
         let (address, signature, _, _, _) =
-            validate_inputs(&proof_request, &OqsSig::new(MlDsa65).unwrap()).unwrap();
+            validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap()).unwrap();
 
         // Verification should fail because the signature is for a different message
         let result = verify_bitcoin_ownership(&address, &signature);
@@ -635,7 +635,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa65).unwrap());
+        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
         assert!(
             result.is_err(),
             "Validation should fail with invalid ML-DSA address"
@@ -674,7 +674,7 @@ mod tests {
 
     #[test]
     fn test_ml_dsa_verification_succeeds() {
-        let verifier = OqsSig::new(MlDsa65).unwrap();
+        let verifier = OqsSig::new(MlDsa44).unwrap();
         let message = "hello world";
 
         // Create a new keypair
@@ -698,7 +698,7 @@ mod tests {
 
     #[test]
     fn test_ml_dsa_verification_fails_wrong_message() {
-        let verifier = OqsSig::new(MlDsa65).unwrap();
+        let verifier = OqsSig::new(MlDsa44).unwrap();
         let wrong_message = "wrong message";
 
         // Create a new keypair
@@ -724,7 +724,7 @@ mod tests {
 
     #[test]
     fn test_ml_dsa_verification_fails_wrong_address() {
-        let verifier = OqsSig::new(MlDsa65).unwrap();
+        let verifier = OqsSig::new(MlDsa44).unwrap();
         let message = "hello world";
 
         // Create two keypairs
