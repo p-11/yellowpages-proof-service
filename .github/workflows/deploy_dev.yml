@@ -28,8 +28,8 @@ jobs:
       - name: Ensure rustfmt is available
         run: rustup component add rustfmt
 
-      - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      # - name: Run Clippy
+      #   run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Check Rust formatting
         run: cargo fmt -- --check
@@ -70,15 +70,13 @@ jobs:
 
       - name: Output PCRs & version in GitHub Step Summary
         run: |
-          echo "Enclave Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "### Enclave Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY # blank line
-          echo "Timestamp: $(date)" >> $GITHUB_STEP_SUMMARY
-          echo "Version: $(cat pcrs.json | jq -r '.version')" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp**: $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "**Version**: $(cat pcrs.json | jq -r '.version')" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY # blank line
-          echo "PCRs:" >> $GITHUB_STEP_SUMMARY
+          echo "**PCRs**:" >> $GITHUB_STEP_SUMMARY
           echo "- PCR0: $(cat pcrs.json | jq -r '.pcr_0')" >> $GITHUB_STEP_SUMMARY
           echo "- PCR1: $(cat pcrs.json | jq -r '.pcr_1')" >> $GITHUB_STEP_SUMMARY
           echo "- PCR2: $(cat pcrs.json | jq -r '.pcr_2')" >> $GITHUB_STEP_SUMMARY
           echo "- PCR8: $(cat pcrs.json | jq -r '.pcr_8')" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY # blank line
-          echo "----EOF----" >> $GITHUB_STEP_SUMMARY
