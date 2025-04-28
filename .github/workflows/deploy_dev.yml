@@ -3,11 +3,14 @@ name: Deploy Dev
 on:
   push:
     paths:
-      - .github/workflows/dev-deploy-enclave.yaml
+      - .github/workflows/deploy_dev.yml
       - src/**
       - Dockerfile
       - enclave.toml
       - Cargo.*
+
+env:
+  VERSION: "hardcode-this-for-now"
 
 jobs:
   deploy:
@@ -26,19 +29,57 @@ jobs:
         run: rustup component add rustfmt
 
       - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -W clippy::pedantic -D warnings
 
       - name: Check Rust formatting
         run: cargo fmt -- --check
 
-      - name: Dev Deploy Enclave
+      - name: Run Rust tests
+        run: cargo test
+
+      - name: Deploy Enclave
         env:
           EV_API_KEY: ${{ secrets.DEV_EV_API_KEY_WITH_ENCLAVE_DEPLOY_PERMISSION }}
           EV_APP_UUID: ${{ secrets.DEV_EV_APP_UUID }}
           EV_ENCLAVE_SIGNING_CERT: ${{ secrets.DEV_EV_ENCLAVE_SIGNING_CERT }}
           EV_ENCLAVE_SIGNING_KEY: ${{ secrets.DEV_EV_ENCLAVE_SIGNING_KEY }}
         run: |
+          # fail fast if any part of the pipe errors
+          set -o pipefail
+          # install the CLI
           curl https://cli.evervault.com/v4/install -sL | sh
+          # write cert + key
           echo "$EV_ENCLAVE_SIGNING_CERT" > cert.pem
-          echo "$EV_ENCLAVE_SIGNING_KEY" > key.pem
-          ev enclave deploy -v
+          echo "$EV_ENCLAVE_SIGNING_KEY"  > key.pem
+          # deploy and emit a compact PCR-only JSON
+          ev enclave deploy -v \
+            | tee raw.json \
+            | jq -c --arg version ${{ env.VERSION }} '{
+                version: $version,
+                pcr_0:   .measurements.PCR0,
+                pcr_1:   .measurements.PCR1,
+                pcr_2:   .measurements.PCR2,
+                pcr_8:   .measurements.PCR8
+              }' > pcrs.json
+
+      - name: Upload PCRs & version to the YP Data Service
+        run: |
+          echo "Sending PCR JSON to data service…"
+          jq . pcrs.json
+          # curl -X POST https://your.api.endpoint/enclaves \
+          #   -H "x-api-key: ${{ secrets.DEV_DATA_SERVICE_API_KEY }}" \
+          #   -H "Content-Type: application/json" \
+          #   --data @pcrs.json
+
+      - name: Output PCRs & version in GitHub Step Summary
+        run: |
+          echo "### Enclave Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY # blank line
+          echo "**Timestamp**: $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "**Version**: $(cat pcrs.json | jq -r '.version')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY # blank line
+          echo "**PCRs**:" >> $GITHUB_STEP_SUMMARY
+          echo "- PCR0: $(cat pcrs.json | jq -r '.pcr_0')" >> $GITHUB_STEP_SUMMARY
+          echo "- PCR1: $(cat pcrs.json | jq -r '.pcr_1')" >> $GITHUB_STEP_SUMMARY
+          echo "- PCR2: $(cat pcrs.json | jq -r '.pcr_2')" >> $GITHUB_STEP_SUMMARY
+          echo "- PCR8: $(cat pcrs.json | jq -r '.pcr_8')" >> $GITHUB_STEP_SUMMARY
