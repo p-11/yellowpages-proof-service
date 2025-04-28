@@ -177,6 +177,63 @@ async fn get_attestation() -> impl IntoResponse {
     .into_response()
 }
 
+async fn embed_addresses_in_proof(
+    bitcoin_address: &BitcoinAddress,
+    ml_dsa_address: &MlDsaAddress,
+) -> Result<String, StatusCode> {
+    let client = Client::new();
+
+    // Create the user data string by concatenating the addresses
+    let user_data = format!(
+        "{}:{}",
+        bitcoin_address,
+        general_purpose::STANDARD.encode(ml_dsa_address.public_key_hash)
+    );
+
+    // Create the attestation request
+    let request_body = AttestationRequest {
+        challenge: user_data,
+    };
+
+    // Send request to the attestation endpoint
+    let response = match client
+        .post("http://127.0.0.1:9999/attestation-doc")
+        .json(&request_body)
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            eprintln!("Failed to fetch attestation document from endpoint: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    // Check if the request was successful
+    if !response.status().is_success() {
+        eprintln!(
+            "Attestation service returned non-200 status: {}",
+            response.status()
+        );
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // Extract the attestation document as bytes
+    let attestation_bytes = match response.bytes().await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!(
+                "Failed to read attestation document bytes from response: {}",
+                e
+            );
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    // Base64 encode the attestation document
+    Ok(general_purpose::STANDARD.encode(attestation_bytes))
+}
+
 async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     // Log the received data
     println!(
