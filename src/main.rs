@@ -23,6 +23,12 @@ struct AttestationResponse {
     timestamp: u64,
 }
 
+#[derive(Serialize, Deserialize)]
+struct UserData {
+    bitcoin_address: String,
+    ml_dsa_address: String,
+}
+
 #[derive(Deserialize)]
 struct ProofRequest {
     bitcoin_signed_message: String,
@@ -429,12 +435,22 @@ async fn embed_addresses_in_proof(
 ) -> Result<String, StatusCode> {
     let client = Client::new();
 
-    // Create the user data string by concatenating the addresses
-    let user_data = format!("{}:{}", bitcoin_address, ml_dsa_address);
+    // Create and serialize the user data struct
+    let user_data = UserData {
+        bitcoin_address: bitcoin_address.to_string(),
+        ml_dsa_address: ml_dsa_address.to_string(),
+    };
+
+    // Serialize to JSON and base64 encode
+    let user_data_json = ok_or_internal_error!(
+        serde_json::to_string(&user_data),
+        "Failed to serialize user data to JSON"
+    );
+    let user_data_base64 = general_purpose::STANDARD.encode(user_data_json);
 
     // Create the attestation request
     let request_body = AttestationRequest {
-        challenge: user_data,
+        challenge: user_data_base64,
     };
 
     // Send request to the attestation endpoint
@@ -827,5 +843,40 @@ mod tests {
             .unwrap();
         let ml_dsa_address = MlDsaAddress::new(decoded_ml_dsa_address).unwrap();
         assert_eq!(ml_dsa_address.to_string(), VALID_ML_DSA_ADDRESS);
+    }
+
+    #[test]
+    fn test_user_data_encoding() {
+        // Create test addresses
+        let decoded_ml_dsa_address = general_purpose::STANDARD
+            .decode(VALID_ML_DSA_ADDRESS)
+            .unwrap();
+        let ml_dsa_address = MlDsaAddress::new(decoded_ml_dsa_address).unwrap();
+        let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS).unwrap();
+        let bitcoin_address = bitcoin_address.require_network(Network::Bitcoin).unwrap();
+
+        // Create and encode user data
+        let user_data = UserData {
+            bitcoin_address: bitcoin_address.to_string(),
+            ml_dsa_address: ml_dsa_address.to_string(),
+        };
+
+        // Serialize to JSON and base64 encode
+        let user_data_json = serde_json::to_string(&user_data).unwrap();
+        let user_data_base64 = general_purpose::STANDARD.encode(user_data_json.as_bytes());
+
+        println!(
+            "Length of user_data_base64 in bytes: {}",
+            user_data_base64.len()
+        );
+
+        // Verify we can decode it back
+        let decoded_json =
+            String::from_utf8(general_purpose::STANDARD.decode(user_data_base64).unwrap()).unwrap();
+        let decoded_data: UserData = serde_json::from_str(&decoded_json).unwrap();
+
+        // Verify the values match
+        assert_eq!(decoded_data.bitcoin_address, VALID_BITCOIN_ADDRESS);
+        assert_eq!(decoded_data.ml_dsa_address, VALID_ML_DSA_ADDRESS);
     }
 }
