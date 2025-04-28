@@ -96,6 +96,31 @@ macro_rules! bad_request {
     }};
 }
 
+// Macro for simple error logging and returning INTERNAL_SERVER_ERROR
+macro_rules! internal_error {
+    ($err_msg:expr) => {{
+        eprintln!($err_msg);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }};
+    ($fmt:expr, $($arg:tt)*) => {{
+        eprintln!($fmt, $($arg)*);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }};
+}
+
+// Macro for handling Results that should return INTERNAL_SERVER_ERROR if Err
+macro_rules! ok_or_internal_error {
+    ($expr:expr, $err_msg:expr) => {
+        match $expr {
+            Ok(val) => val,
+            Err(e) => {
+                eprintln!("{}: {}", $err_msg, e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    };
+}
+
 #[tokio::main]
 async fn main() {
     // build our application with routes
@@ -196,39 +221,28 @@ async fn embed_addresses_in_proof(
     };
 
     // Send request to the attestation endpoint
-    let response = match client
-        .post("http://127.0.0.1:9999/attestation-doc")
-        .json(&request_body)
-        .send()
-        .await
-    {
-        Ok(resp) => resp,
-        Err(e) => {
-            eprintln!("Failed to fetch attestation document from endpoint: {}", e);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    };
+    let response = ok_or_internal_error!(
+        client
+            .post("http://127.0.0.1:9999/attestation-doc")
+            .json(&request_body)
+            .send()
+            .await,
+        "Failed to fetch attestation document from endpoint"
+    );
 
     // Check if the request was successful
     if !response.status().is_success() {
-        eprintln!(
+        internal_error!(
             "Attestation service returned non-200 status: {}",
             response.status()
         );
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     // Extract the attestation document as bytes
-    let attestation_bytes = match response.bytes().await {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!(
-                "Failed to read attestation document bytes from response: {}",
-                e
-            );
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    };
+    let attestation_bytes = ok_or_internal_error!(
+        response.bytes().await,
+        "Failed to read attestation document bytes from response"
+    );
 
     // Base64 encode the attestation document
     Ok(general_purpose::STANDARD.encode(attestation_bytes))
