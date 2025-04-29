@@ -52,7 +52,7 @@ jobs:
           # write cert + key
           echo "$EV_ENCLAVE_SIGNING_CERT" > cert.pem
           echo "$EV_ENCLAVE_SIGNING_KEY"  > key.pem
-          # deploy and emit a compact PCR-only JSON
+          # deploy and emit a compact pcr.json
           ev enclave deploy -v \
             | tee raw.json \
             | jq -c \
