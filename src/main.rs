@@ -478,14 +478,40 @@ mod tests {
 
     // Mock handler for attestation requests
     async fn mock_attestation_handler(
-        Json(_request): Json<AttestationRequest>,
+        expected_bitcoin_address: String,
+        expected_ml_dsa_address: String,
+        Json(request): Json<AttestationRequest>,
     ) -> impl IntoResponse {
+        // Decode and verify the challenge
+        let decoded_json =
+            match String::from_utf8(general_purpose::STANDARD.decode(request.challenge).unwrap()) {
+                Ok(json) => json,
+                Err(_) => {
+                    return (StatusCode::BAD_REQUEST, "Invalid base64 in challenge").into_response();
+                }
+            };
+
+        let decoded_data: UserData = match serde_json::from_str(&decoded_json) {
+            Ok(data) => data,
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "Invalid JSON in challenge").into_response();
+            }
+        };
+
+        // Verify the addresses match what we expect
+        if decoded_data.bitcoin_address != expected_bitcoin_address
+            || decoded_data.ml_dsa_44_address != expected_ml_dsa_address
+        {
+            return (StatusCode::BAD_REQUEST, "Address mismatch in challenge").into_response();
+        }
+
         let mock_attestation = b"mock_attestation_document_bytes";
         (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
             mock_attestation,
         )
+            .into_response()
     }
 
     // Constants for test data
@@ -678,8 +704,17 @@ mod tests {
     #[tokio::test]
     async fn test_end_to_end() {
         // Start mock attestation server
-        let mock_attestation_app =
-            Router::new().route("/attestation-doc", post(mock_attestation_handler));
+        let mock_attestation_app = Router::new().route(
+            "/attestation-doc",
+            post(|req| {
+                mock_attestation_handler(
+                    VALID_BITCOIN_ADDRESS.to_string(),
+                    VALID_ML_DSA_ADDRESS.to_string(),
+                    req,
+                )
+            }),
+        );
+
         let mock_attestation_listener = tokio::net::TcpListener::bind("127.0.0.1:9999")
             .await
             .unwrap();
