@@ -17,12 +17,6 @@ struct AttestationRequest {
     challenge: String,
 }
 
-#[derive(Serialize)]
-struct AttestationResponse {
-    attestation_doc: String,
-    timestamp: u64,
-}
-
 #[derive(Serialize, Deserialize)]
 struct UserData {
     bitcoin_address: String,
@@ -164,11 +158,7 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
         Ok(v) => v,
         Err(e) => {
             eprintln!("Failed to initialize ML-DSA verifier: {e}");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to initialize ML-DSA verifier",
-            )
-                .into_response();
+            return StatusCode::INTERNAL_SERVER_ERROR;
         }
     };
 
@@ -181,12 +171,12 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
         ml_dsa_signed_message,
     ) = match validate_inputs(&proof_request, &ml_dsa_verifier) {
         Ok(result) => result,
-        Err(status) => return (status, "Input validation failed").into_response(),
+        Err(status) => return status,
     };
 
     // Step 2: Verify Bitcoin ownership
     if let Err(status) = verify_bitcoin_ownership(&bitcoin_address, &bitcoin_signed_message) {
-        return (status, "Bitcoin ownership verification failed").into_response();
+        return status;
     }
 
     // Step 3: Verify ML-DSA ownership
@@ -196,21 +186,18 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
         &ml_dsa_signed_message,
         &ml_dsa_verifier,
     ) {
-        return (status, "ML-DSA ownership verification failed").into_response();
+        return status;
     }
 
     // Step 4: Get attestation document with embedded addresses
-    let attestation_doc = match embed_addresses_in_proof(&bitcoin_address, &ml_dsa_address).await {
-        Ok(doc) => doc,
-        Err(status) => return (status, "Failed to embed addresses in proof").into_response(),
-    };
+    let _attestation_doc_base64 =
+        match embed_addresses_in_proof(&bitcoin_address, &ml_dsa_address).await {
+            Ok(doc) => doc,
+            Err(status) => return status,
+        };
 
-    // Return the attestation doc and timestamp as JSON
-    Json(AttestationResponse {
-        attestation_doc,
-        timestamp: 1_234_567_890,
-    })
-    .into_response()
+    // Return just a 200 status code
+    StatusCode::OK
 }
 
 fn validate_inputs(
