@@ -29,6 +29,14 @@ struct UserData {
     ml_dsa_44_address: String,
 }
 
+impl UserData {
+    fn encode(&self) -> Result<String, serde_json::Error> {
+        // Serialize to JSON and base64 encode
+        let user_data_json = serde_json::to_string(self)?;
+        Ok(general_purpose::STANDARD.encode(user_data_json.as_bytes()))
+    }
+}
+
 #[derive(Deserialize)]
 struct ProofRequest {
     bitcoin_signed_message: String,
@@ -435,18 +443,13 @@ async fn embed_addresses_in_proof(
 ) -> Result<String, StatusCode> {
     let client = Client::new();
 
-    // Create and serialize the user data struct
+    // Create and encode the user data struct
     let user_data = UserData {
         bitcoin_address: bitcoin_address.to_string(),
         ml_dsa_44_address: ml_dsa_address.to_string(),
     };
 
-    // Serialize to JSON and base64 encode
-    let user_data_json = ok_or_internal_error!(
-        serde_json::to_string(&user_data),
-        "Failed to serialize user data to JSON"
-    );
-    let user_data_base64 = general_purpose::STANDARD.encode(user_data_json);
+    let user_data_base64 = ok_or_internal_error!(user_data.encode(), "Failed to encode user data");
 
     // Create the attestation request
     let request_body = AttestationRequest {
@@ -848,27 +851,15 @@ mod tests {
     #[test]
     fn test_user_data_encoding() {
         // Create test addresses
-        let decoded_ml_dsa_address = general_purpose::STANDARD
-            .decode(VALID_ML_DSA_ADDRESS)
-            .unwrap();
-        let ml_dsa_address = MlDsaAddress::new(decoded_ml_dsa_address).unwrap();
-        let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS).unwrap();
-        let bitcoin_address = bitcoin_address.require_network(Network::Bitcoin).unwrap();
 
         // Create and encode user data
         let user_data = UserData {
-            bitcoin_address: bitcoin_address.to_string(),
-            ml_dsa_44_address: ml_dsa_address.to_string(),
+            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
+            ml_dsa_44_address: VALID_ML_DSA_ADDRESS.to_string(),
         };
 
-        // Serialize to JSON and base64 encode
-        let user_data_json = serde_json::to_string(&user_data).unwrap();
-        let user_data_base64 = general_purpose::STANDARD.encode(user_data_json.as_bytes());
-
-        println!(
-            "Length of user_data_base64 in bytes: {}",
-            user_data_base64.len()
-        );
+        // Encode using our new method
+        let user_data_base64 = user_data.encode().unwrap();
 
         // Verify we can decode it back
         let decoded_json =
