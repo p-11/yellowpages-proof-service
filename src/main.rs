@@ -196,7 +196,8 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
             Err(status) => return status,
         };
 
-    // Return just a 200 status code
+    // Success path
+    println!("All verifications completed successfully");
     StatusCode::OK
 }
 
@@ -487,7 +488,8 @@ mod tests {
             match String::from_utf8(general_purpose::STANDARD.decode(request.challenge).unwrap()) {
                 Ok(json) => json,
                 Err(_) => {
-                    return (StatusCode::BAD_REQUEST, "Invalid base64 in challenge").into_response();
+                    return (StatusCode::BAD_REQUEST, "Invalid base64 in challenge")
+                        .into_response();
                 }
             };
 
@@ -872,8 +874,6 @@ mod tests {
 
     #[test]
     fn test_user_data_encoding() {
-        // Create test addresses
-
         // Create and encode user data
         let user_data = UserData {
             bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
