@@ -163,7 +163,7 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     let ml_dsa_verifier = match OqsSig::new(MlDsa44) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("Failed to initialize ML-DSA verifier: {}", e);
+            eprintln!("Failed to initialize ML-DSA verifier: {e}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to initialize ML-DSA verifier",
@@ -208,7 +208,7 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     // Return the attestation doc and timestamp as JSON
     Json(AttestationResponse {
         attestation_doc,
-        timestamp: 1234567890,
+        timestamp: 1_234_567_890,
     })
     .into_response()
 }
