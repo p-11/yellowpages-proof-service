@@ -78,7 +78,7 @@ jobs:
           EV_ENCLAVE_SIGNING_KEY: ${{ env.EV_ENCLAVE_SIGNING_KEY }}
         run: |
           # fail fast if any part of the pipe errors
-          set -o pipefail
+          set -eo pipefail
           # install the CLI
           curl https://cli.evervault.com/v4/install -sL | sh
           # write cert + key
