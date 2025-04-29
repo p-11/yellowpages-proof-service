@@ -5,12 +5,15 @@ on:
     inputs:
       major:
         description: "Major version (integer)"
+        type: number
         required: true
       minor:
         description: "Minor version (integer)"
+        type: number
         required: true
       patch:
         description: "Patch version (integer)"
+        type: number
         required: true
 
 env:
