@@ -12,6 +12,12 @@ on:
 env:
   VERSION: "hardcode-this-for-now"
   RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  EV_API_KEY: ${{ secrets.DEV_EV_API_KEY_WITH_ENCLAVE_DEPLOY_PERMISSION }}
+  EV_APP_UUID: ${{ secrets.DEV_EV_APP_UUID }}
+  EV_ENCLAVE_SIGNING_CERT: ${{ secrets.DEV_EV_ENCLAVE_SIGNING_CERT }}
+  EV_ENCLAVE_SIGNING_KEY: ${{ secrets.DEV_EV_ENCLAVE_SIGNING_KEY }}
+  YP_DS_API_URL: ${{ secrets.DEV_YP_DS_API_URL }}
+  YP_DS_API_KEY: ${{ secrets.DEV_YP_DS_API_KEY }}
 
 jobs:
   deploy:
@@ -40,10 +46,10 @@ jobs:
 
       - name: Deploy Enclave
         env:
-          EV_API_KEY: ${{ secrets.DEV_EV_API_KEY_WITH_ENCLAVE_DEPLOY_PERMISSION }}
-          EV_APP_UUID: ${{ secrets.DEV_EV_APP_UUID }}
-          EV_ENCLAVE_SIGNING_CERT: ${{ secrets.DEV_EV_ENCLAVE_SIGNING_CERT }}
-          EV_ENCLAVE_SIGNING_KEY: ${{ secrets.DEV_EV_ENCLAVE_SIGNING_KEY }}
+          EV_API_KEY: ${{ env.EV_API_KEY }}
+          EV_APP_UUID: ${{ env.EV_APP_UUID }}
+          EV_ENCLAVE_SIGNING_CERT: ${{ env.EV_ENCLAVE_SIGNING_CERT }}
+          EV_ENCLAVE_SIGNING_KEY: ${{ env.EV_ENCLAVE_SIGNING_KEY }}
         run: |
           # fail fast if any part of the pipe errors
           set -o pipefail
@@ -59,22 +65,29 @@ jobs:
                 --arg version ${{ env.VERSION }} \
                 --arg run_url ${{ env.RUN_URL }} \
                 '{
-                  version:    $version,
-                  action_run: $run_url,
-                  pcr_0:      .measurements.PCR0,
-                  pcr_1:      .measurements.PCR1,
-                  pcr_2:      .measurements.PCR2,
-                  pcr_8:      .measurements.PCR8
+                  version:            $version,
+                  github_action_run:  $run_url,
+                  pcr_0:              .measurements.PCR0,
+                  pcr_1:              .measurements.PCR1,
+                  pcr_2:              .measurements.PCR2,
+                  pcr_8:              .measurements.PCR8
                 }' > pcrs.json
 
       - name: Upload PCRs & version to the YP Data Service
+        env:
+          YP_DS_API_URL: ${{ env.YP_DS_API_URL }}
+          YP_DS_API_KEY: ${{ env.YP_DS_API_KEY }}
         run: |
+          # fail fast if any part of the pipe errors
+          set -eo pipefail
           echo "Sending PCR JSON to data service…"
-          jq . pcrs.json
-          # curl -X POST https://your.api.endpoint/enclaves \
-          #   -H "x-api-key: ${{ secrets.DEV_DATA_SERVICE_API_KEY }}" \
-          #   -H "Content-Type: application/json" \
-          #   --data @pcrs.json
+          # fail on 4xx/5xx, show errors
+          curl --fail \
+            -X POST "${{ env.YP_DS_API_URL }}" \
+            -H "x-api-key: ${{ env.YP_DS_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            --data @pcrs.json
+          echo "Uploaded to the YP Data Service"
 
       - name: Output PCRs & version in GitHub Step Summary
         run: |
