@@ -844,7 +844,7 @@ mod tests {
         let decoded_ml_dsa_address = general_purpose::STANDARD
             .decode(VALID_ML_DSA_ADDRESS)
             .unwrap();
-        let ml_dsa_address = MlDsaAddress::new(decoded_ml_dsa_address).unwrap();
+        let ml_dsa_address = MlDsaAddress::new(&decoded_ml_dsa_address).unwrap();
         assert_eq!(ml_dsa_address.to_string(), VALID_ML_DSA_ADDRESS);
     }
 
