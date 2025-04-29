@@ -26,7 +26,7 @@ struct AttestationResponse {
 #[derive(Serialize, Deserialize)]
 struct UserData {
     bitcoin_address: String,
-    ml_dsa_address: String,
+    ml_dsa_44_address: String,
 }
 
 #[derive(Deserialize)]
@@ -438,7 +438,7 @@ async fn embed_addresses_in_proof(
     // Create and serialize the user data struct
     let user_data = UserData {
         bitcoin_address: bitcoin_address.to_string(),
-        ml_dsa_address: ml_dsa_address.to_string(),
+        ml_dsa_44_address: ml_dsa_address.to_string(),
     };
 
     // Serialize to JSON and base64 encode
@@ -858,7 +858,7 @@ mod tests {
         // Create and encode user data
         let user_data = UserData {
             bitcoin_address: bitcoin_address.to_string(),
-            ml_dsa_address: ml_dsa_address.to_string(),
+            ml_dsa_44_address: ml_dsa_address.to_string(),
         };
 
         // Serialize to JSON and base64 encode
@@ -877,6 +877,6 @@ mod tests {
 
         // Verify the values match
         assert_eq!(decoded_data.bitcoin_address, VALID_BITCOIN_ADDRESS);
-        assert_eq!(decoded_data.ml_dsa_address, VALID_ML_DSA_ADDRESS);
+        assert_eq!(decoded_data.ml_dsa_44_address, VALID_ML_DSA_ADDRESS);
     }
 }
