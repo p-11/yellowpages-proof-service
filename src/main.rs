@@ -136,6 +136,11 @@ macro_rules! ok_or_internal_error {
 
 #[tokio::main]
 async fn main() {
+    // read VERSION from the environment, fallback to "unknown"
+    let version = std::env::var("VERSION").unwrap_or_else(|_| "unknown".to_string());
+
+    println!("Version: {}", version);
+
     // build our application with routes
     let app = Router::new().route("/prove", post(prove));
 
