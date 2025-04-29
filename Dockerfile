@@ -3,8 +3,8 @@ FROM rust:1.86 AS builder
 
 # install clang – required for liboqs build
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        clang            \
-        cmake
+    clang            \
+    cmake
 
 WORKDIR /app
 # Copy manifest and source code.
