@@ -1,16 +1,20 @@
 name: Deploy Dev
 
 on:
-  push:
-    paths:
-      - .github/workflows/deploy_dev.yml
-      - src/**
-      - Dockerfile
-      - enclave.toml
-      - Cargo.*
+  workflow_dispatch:
+    inputs:
+      major:
+        description: "Major version (integer)"
+        required: true
+      minor:
+        description: "Minor version (integer)"
+        required: true
+      patch:
+        description: "Patch version (integer)"
+        required: true
 
 env:
-  VERSION: "hardcode-this-for-now"
+  VERSION: ${{ github.event.inputs.major }}.${{ github.event.inputs.minor }}.${{ github.event.inputs.patch }}
   RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
   EV_API_KEY: ${{ secrets.DEV_EV_API_KEY_WITH_ENCLAVE_DEPLOY_PERMISSION }}
   EV_APP_UUID: ${{ secrets.DEV_EV_APP_UUID }}
@@ -26,23 +30,42 @@ jobs:
     environment: development
 
     steps:
+      - name: Abort if not on development
+        run: |
+          # github.ref is like "refs/heads/development"
+          echo "Dispatched ref: $GITHUB_REF"
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          echo "Selected branch: $BRANCH"
+          if [ "$BRANCH" != "development" ]; then
+            echo "::error::This workflow must be run on 'development', not '$BRANCH'."
+            exit 1
+          fi
+
+      - name: Validate semver
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid semantic version: $VERSION"
+            exit 1
+          fi
+          echo "Version is valid: $VERSION"
+
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      # - name: Ensure Clippy is available
-      #   run: rustup component add clippy
+      - name: Ensure Clippy is available
+        run: rustup component add clippy
 
-      # - name: Ensure rustfmt is available
-      #   run: rustup component add rustfmt
+      - name: Ensure rustfmt is available
+        run: rustup component add rustfmt
 
-      # - name: Run Clippy
-      #   run: cargo clippy --all-targets --all-features -- -W clippy::pedantic -D warnings
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -W clippy::pedantic -D warnings
 
-      # - name: Check Rust formatting
-      #   run: cargo fmt -- --check
+      - name: Check Rust formatting
+        run: cargo fmt -- --check
 
-      # - name: Run Rust tests
-      #   run: cargo test
+      - name: Run Rust tests
+        run: cargo test
 
       - name: Deploy Enclave
         env:
@@ -82,7 +105,7 @@ jobs:
           set -eo pipefail
           echo "Sending PCR JSON to data service…"
           # fail on 4xx/5xx, show errors
-          curl -v --show-error \
+          curl --fail \
             -X POST "${{ env.YP_DS_API_URL }}" \
             -H "x-api-key: ${{ env.YP_DS_API_KEY }}" \
             -H "Content-Type: application/json" \
