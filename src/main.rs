@@ -478,26 +478,20 @@ mod tests {
     use axum::routing::post;
 
     // Mock handler for attestation requests
-    async fn mock_attestation_handler(
-        expected_bitcoin_address: String,
-        expected_ml_dsa_address: String,
+    fn mock_attestation_handler(
+        expected_bitcoin_address: &str,
+        expected_ml_dsa_address: &str,
         Json(request): Json<AttestationRequest>,
     ) -> impl IntoResponse {
         // Decode and verify the challenge
-        let decoded_json =
-            match String::from_utf8(general_purpose::STANDARD.decode(request.challenge).unwrap()) {
-                Ok(json) => json,
-                Err(_) => {
-                    return (StatusCode::BAD_REQUEST, "Invalid base64 in challenge")
-                        .into_response();
-                }
-            };
+        let Ok(decoded_json) =
+            String::from_utf8(general_purpose::STANDARD.decode(request.challenge).unwrap())
+        else {
+            return (StatusCode::BAD_REQUEST, "Invalid base64 in challenge").into_response();
+        };
 
-        let decoded_data: UserData = match serde_json::from_str(&decoded_json) {
-            Ok(data) => data,
-            Err(_) => {
-                return (StatusCode::BAD_REQUEST, "Invalid JSON in challenge").into_response();
-            }
+        let Ok(decoded_data): Result<UserData, _> = serde_json::from_str(&decoded_json) else {
+            return (StatusCode::BAD_REQUEST, "Invalid JSON in challenge").into_response();
         };
 
         // Verify the addresses match what we expect
@@ -708,12 +702,8 @@ mod tests {
         // Start mock attestation server
         let mock_attestation_app = Router::new().route(
             "/attestation-doc",
-            post(|req| {
-                mock_attestation_handler(
-                    VALID_BITCOIN_ADDRESS.to_string(),
-                    VALID_ML_DSA_ADDRESS.to_string(),
-                    req,
-                )
+            post(|req| async move {
+                mock_attestation_handler(VALID_BITCOIN_ADDRESS, VALID_ML_DSA_ADDRESS, req)
             }),
         );
 
