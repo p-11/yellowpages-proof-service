@@ -9,6 +9,7 @@ use oqs::sig::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fmt;
 use std::str::FromStr;
 
@@ -134,15 +135,82 @@ macro_rules! ok_or_internal_error {
     };
 }
 
+#[derive(Serialize)]
+struct CreateProofRequest {
+    btc_address: String,
+    ml_dsa_44_address: String,
+    version: String,
+    proof: String,
+}
+
+#[derive(Clone)]
+struct Config {
+    data_layer_url: String,
+    data_layer_api_key: String,
+}
+
+impl Config {
+    fn from_env() -> Result<Self, String> {
+        Ok(Config {
+            data_layer_url: env::var("YP_DS_API_URL")
+                .map_err(|_| "YP_DS_API_URL environment variable not set")?,
+            data_layer_api_key: env::var("YP_DS_API_KEY")
+                .map_err(|_| "YP_DS_API_KEY environment variable not set")?,
+        })
+    }
+}
+
+async fn upload_to_data_layer(
+    bitcoin_address: &BitcoinAddress,
+    ml_dsa_address: &MlDsaAddress,
+    attestation_doc_base64: &str,
+    config: &Config,
+) -> Result<(), StatusCode> {
+    let client = Client::new();
+
+    let request = CreateProofRequest {
+        btc_address: bitcoin_address.to_string(),
+        ml_dsa_44_address: ml_dsa_address.to_string(),
+        version: "1.1.0".to_string(),
+        proof: attestation_doc_base64.to_string(),
+    };
+
+    // Send request to data layer
+    let response = ok_or_internal_error!(
+        client
+            .post(format!("{}/v1/proofs", config.data_layer_url))
+            .header("x-api-key", &config.data_layer_api_key)
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await,
+        "Failed to send request to data layer"
+    );
+
+    // Check if the request was successful
+    if !response.status().is_success() {
+        internal_error!(
+            "Data layer returned non-success status: {}",
+            response.status()
+        );
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
-    // read VERSION from the environment, fallback to "unknown"
-    let version = std::env::var("VERSION").unwrap_or_else(|_| "unknown".to_string());
-
-    println!("Version: {}", version);
+    // Parse config from environment
+    let config = match Config::from_env() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Failed to load config: {e}");
+            std::process::exit(1);
+        }
+    };
 
     // build our application with routes
-    let app = Router::new().route("/prove", post(prove));
+    let app = Router::new().route("/prove", post(move |req| prove(req, config.clone())));
 
     println!("Server running on http://0.0.0.0:8008");
 
@@ -151,7 +219,7 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
+async fn prove(Json(proof_request): Json<ProofRequest>, config: Config) -> StatusCode {
     // Log the received data
     println!(
         "Received proof request - Bitcoin Address: {}, ML-DSA Address: {}",
@@ -195,11 +263,23 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     }
 
     // Step 4: Get attestation document with embedded addresses
-    let _attestation_doc_base64 =
+    let attestation_doc_base64 =
         match embed_addresses_in_proof(&bitcoin_address, &ml_dsa_address).await {
             Ok(doc) => doc,
             Err(status) => return status,
         };
+
+    // Step 5: Upload to data layer
+    if let Err(status) = upload_to_data_layer(
+        &bitcoin_address,
+        &ml_dsa_address,
+        &attestation_doc_base64,
+        &config,
+    )
+    .await
+    {
+        return status;
+    }
 
     // Success path
     println!("All verifications completed successfully");
@@ -735,8 +815,15 @@ mod tests {
         };
 
         // Call the main function with the request
-        let response = prove(Json(proof_request)).await.into_response();
-        assert_eq!(response.status(), StatusCode::OK);
+        let response = prove(
+            Json(proof_request),
+            Config {
+                data_layer_url: "http://127.0.0.1:9999".to_string(),
+                data_layer_api_key: "mock_api_key".to_string(),
+            },
+        )
+        .await;
+        assert_eq!(response, StatusCode::OK);
     }
 
     #[tokio::test]
@@ -750,8 +837,15 @@ mod tests {
         };
 
         // This should fail during validation with a BAD_REQUEST
-        let response = prove(Json(proof_request)).await.into_response();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = prove(
+            Json(proof_request),
+            Config {
+                data_layer_url: "http://127.0.0.1:9999".to_string(),
+                data_layer_api_key: "mock_api_key".to_string(),
+            },
+        )
+        .await;
+        assert_eq!(response, StatusCode::BAD_REQUEST);
     }
 
     #[test]
