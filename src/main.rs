@@ -1,9 +1,4 @@
-use axum::{
-    Json, Router,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::{get, post},
-};
+use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
 use base64::{Engine, engine::general_purpose};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
@@ -14,18 +9,26 @@ use oqs::sig::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::str::FromStr;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize, Deserialize)]
 struct AttestationRequest {
     challenge: String,
 }
 
-#[derive(Serialize)]
-struct AttestationResponse {
-    attestation_doc: String,
-    timestamp: u64,
+#[derive(Serialize, Deserialize)]
+struct UserData {
+    bitcoin_address: String,
+    ml_dsa_44_address: String,
+}
+
+impl UserData {
+    fn encode(&self) -> Result<String, serde_json::Error> {
+        // Serialize to JSON and base64 encode
+        let user_data_json = serde_json::to_string(self)?;
+        Ok(general_purpose::STANDARD.encode(user_data_json.as_bytes()))
+    }
 }
 
 #[derive(Deserialize)]
@@ -55,6 +58,16 @@ impl MlDsaAddress {
         Ok(MlDsaAddress {
             public_key_hash: arr,
         })
+    }
+}
+
+impl fmt::Display for MlDsaAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            general_purpose::STANDARD.encode(self.public_key_hash)
+        )
     }
 }
 
@@ -96,85 +109,41 @@ macro_rules! bad_request {
     }};
 }
 
+// Macro for simple error logging and returning INTERNAL_SERVER_ERROR
+macro_rules! internal_error {
+    ($err_msg:expr) => {{
+        eprintln!($err_msg);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }};
+    ($fmt:expr, $($arg:tt)*) => {{
+        eprintln!($fmt, $($arg)*);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }};
+}
+
+// Macro for handling Results that should return INTERNAL_SERVER_ERROR if Err
+macro_rules! ok_or_internal_error {
+    ($expr:expr, $err_msg:expr) => {
+        match $expr {
+            Ok(val) => val,
+            Err(e) => {
+                eprintln!("{}: {}", $err_msg, e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    };
+}
+
 #[tokio::main]
 async fn main() {
     // build our application with routes
-    let app = Router::new()
-        .route("/", get(get_attestation))
-        .route("/prove", post(prove));
+    let app = Router::new().route("/prove", post(prove));
 
     println!("Server running on http://0.0.0.0:8008");
 
     // run our app with hyper, listening globally on port 8008
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8008").await.unwrap();
     axum::serve(listener, app).await.unwrap();
-}
-
-async fn get_attestation() -> impl IntoResponse {
-    let client = Client::new();
-
-    // Create the attestation request
-    let request_body = AttestationRequest {
-        challenge: "hello-world".to_string(),
-    };
-
-    // Send request to the attestation endpoint
-    // When running as an Evervault Enclave, the attestation service is available at this endpoint
-    let response = match client
-        .post("http://127.0.0.1:9999/attestation-doc")
-        .json(&request_body)
-        .send()
-        .await
-    {
-        Ok(resp) => resp,
-        Err(e) => {
-            eprintln!("Error requesting attestation document: {e}");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to fetch attestation document".to_string(),
-            )
-                .into_response();
-        }
-    };
-
-    // Check if the request was successful
-    if !response.status().is_success() {
-        eprintln!("Error status: {}", response.status());
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Attestation service returned error: {}", response.status()),
-        )
-            .into_response();
-    }
-
-    // Extract the attestation document as bytes
-    let attestation_bytes = match response.bytes().await {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("Error reading response body: {e}");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to read attestation document".to_string(),
-            )
-                .into_response();
-        }
-    };
-
-    // Base64 encode the attestation document
-    let attestation_doc = general_purpose::STANDARD.encode(attestation_bytes);
-
-    // Get current Unix timestamp in seconds
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    // Return the attestation doc and timestamp as JSON
-    Json(AttestationResponse {
-        attestation_doc,
-        timestamp,
-    })
-    .into_response()
 }
 
 async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
@@ -220,7 +189,12 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
         return status;
     }
 
-    // TODO: embed_addresses_in_proof()
+    // Step 4: Get attestation document with embedded addresses
+    let _attestation_doc_base64 =
+        match embed_addresses_in_proof(&bitcoin_address, &ml_dsa_address).await {
+            Ok(doc) => doc,
+            Err(status) => return status,
+        };
 
     // Success path
     println!("All verifications completed successfully");
@@ -451,9 +425,90 @@ fn verify_ml_dsa_ownership(
     Ok(())
 }
 
+async fn embed_addresses_in_proof(
+    bitcoin_address: &BitcoinAddress,
+    ml_dsa_address: &MlDsaAddress,
+) -> Result<String, StatusCode> {
+    let client = Client::new();
+
+    // Create and encode the user data struct
+    let user_data = UserData {
+        bitcoin_address: bitcoin_address.to_string(),
+        ml_dsa_44_address: ml_dsa_address.to_string(),
+    };
+
+    let user_data_base64 = ok_or_internal_error!(user_data.encode(), "Failed to encode user data");
+
+    // Create the attestation request
+    let request_body = AttestationRequest {
+        challenge: user_data_base64,
+    };
+
+    // Send request to the attestation endpoint
+    let response = ok_or_internal_error!(
+        client
+            .post("http://127.0.0.1:9999/attestation-doc")
+            .json(&request_body)
+            .send()
+            .await,
+        "Failed to fetch attestation document from endpoint"
+    );
+
+    // Check if the request was successful
+    if !response.status().is_success() {
+        internal_error!(
+            "Attestation service returned non-200 status: {}",
+            response.status()
+        );
+    }
+
+    // Extract the attestation document as bytes
+    let attestation_bytes = ok_or_internal_error!(
+        response.bytes().await,
+        "Failed to read attestation document bytes from response"
+    );
+
+    // Base64 encode the attestation document
+    Ok(general_purpose::STANDARD.encode(attestation_bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::routing::post;
+
+    // Mock handler for attestation requests
+    fn mock_attestation_handler(
+        expected_bitcoin_address: &str,
+        expected_ml_dsa_address: &str,
+        Json(request): Json<AttestationRequest>,
+    ) -> impl IntoResponse {
+        // Decode and verify the challenge
+        let Ok(decoded_json) =
+            String::from_utf8(general_purpose::STANDARD.decode(request.challenge).unwrap())
+        else {
+            return (StatusCode::BAD_REQUEST, "Invalid base64 in challenge").into_response();
+        };
+
+        let Ok(decoded_data): Result<UserData, _> = serde_json::from_str(&decoded_json) else {
+            return (StatusCode::BAD_REQUEST, "Invalid JSON in challenge").into_response();
+        };
+
+        // Verify the addresses match what we expect
+        if decoded_data.bitcoin_address != expected_bitcoin_address
+            || decoded_data.ml_dsa_44_address != expected_ml_dsa_address
+        {
+            return (StatusCode::BAD_REQUEST, "Address mismatch in challenge").into_response();
+        }
+
+        let mock_attestation = b"mock_attestation_document_bytes";
+        (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+            mock_attestation,
+        )
+            .into_response()
+    }
 
     // Constants for test data
     const VALID_BITCOIN_ADDRESS: &str = "1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm"; // P2PKH address
@@ -644,6 +699,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_end_to_end() {
+        // Start mock attestation server
+        let mock_attestation_app = Router::new().route(
+            "/attestation-doc",
+            post(|req| async move {
+                mock_attestation_handler(VALID_BITCOIN_ADDRESS, VALID_ML_DSA_ADDRESS, req)
+            }),
+        );
+
+        let mock_attestation_listener = tokio::net::TcpListener::bind("127.0.0.1:9999")
+            .await
+            .unwrap();
+
+        // Spawn the mock server to run concurrently
+        tokio::spawn(async move {
+            axum::serve(mock_attestation_listener, mock_attestation_app)
+                .await
+                .unwrap();
+        });
+
+        // Give the server a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
             bitcoin_signed_message: VALID_SIGNATURE.to_string(),
@@ -774,5 +851,35 @@ mod tests {
             result.unwrap_err(),
             "Invalid ML-DSA address length: expected 32 bytes, got 33"
         );
+    }
+
+    #[test]
+    fn test_mldsa_address_to_string() {
+        let decoded_ml_dsa_address = general_purpose::STANDARD
+            .decode(VALID_ML_DSA_ADDRESS)
+            .unwrap();
+        let ml_dsa_address = MlDsaAddress::new(&decoded_ml_dsa_address).unwrap();
+        assert_eq!(ml_dsa_address.to_string(), VALID_ML_DSA_ADDRESS);
+    }
+
+    #[test]
+    fn test_user_data_encoding() {
+        // Create and encode user data
+        let user_data = UserData {
+            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
+            ml_dsa_44_address: VALID_ML_DSA_ADDRESS.to_string(),
+        };
+
+        // Encode using our new method
+        let user_data_base64 = user_data.encode().unwrap();
+
+        // Verify we can decode it back
+        let decoded_json =
+            String::from_utf8(general_purpose::STANDARD.decode(user_data_base64).unwrap()).unwrap();
+        let decoded_data: UserData = serde_json::from_str(&decoded_json).unwrap();
+
+        // Verify the values match
+        assert_eq!(decoded_data.bitcoin_address, VALID_BITCOIN_ADDRESS);
+        assert_eq!(decoded_data.ml_dsa_44_address, VALID_ML_DSA_ADDRESS);
     }
 }
