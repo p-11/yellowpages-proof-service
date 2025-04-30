@@ -62,12 +62,6 @@ jobs:
           ENCLAVE_DEBUG: ${{ env.ENCLAVE_DEBUG }}
         run: envsubst < enclave.toml.tmpl > enclave.toml
 
-      - name: TEMP Show rendered config.toml
-        run: |
-          echo "⎡─ enclave.toml ──────────────────────────⎤"
-          cat enclave.toml
-          echo "⎣────────────────────────────────────────⎦"
-
       - name: Ensure Clippy is available
         run: rustup component add clippy
 
