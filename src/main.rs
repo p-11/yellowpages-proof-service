@@ -14,6 +14,17 @@ use std::env;
 use std::fmt;
 use std::str::FromStr;
 
+type ValidationResult = Result<
+    (
+        BitcoinAddress,
+        BitcoinMessageSignature,
+        MlDsaAddress,
+        MlDsaVerifyingKey<MlDsa44>,
+        MlDsaSignature<MlDsa44>,
+    ),
+    StatusCode,
+>;
+
 #[derive(Serialize, Deserialize)]
 struct AttestationRequest {
     challenge: String,
@@ -275,18 +286,7 @@ async fn prove(Json(proof_request): Json<ProofRequest>, config: Config) -> Statu
     StatusCode::NO_CONTENT
 }
 
-fn validate_inputs(
-    proof_request: &ProofRequest,
-) -> Result<
-    (
-        BitcoinAddress,
-        BitcoinMessageSignature,
-        MlDsaAddress,
-        MlDsaVerifyingKey<MlDsa44>,
-        MlDsaSignature<MlDsa44>,
-    ),
-    StatusCode,
-> {
+fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
     // Validate that all required fields have reasonable lengths to avoid decoding large amounts of data
     if proof_request.bitcoin_address.len() > 100 {
         bad_request!(
@@ -905,14 +905,14 @@ mod tests {
         };
 
         // Call the main function with the request
-        let response = prove(
+        let response = Box::pin(prove(
             Json(proof_request),
             Config {
                 data_layer_url: "http://127.0.0.1:9998".to_string(),
                 data_layer_api_key: "mock_api_key".to_string(),
                 version: TEST_VERSION.to_string(),
             },
-        )
+        ))
         .await;
         assert_eq!(response, StatusCode::NO_CONTENT);
     }
@@ -928,14 +928,14 @@ mod tests {
         };
 
         // This should fail during validation with a BAD_REQUEST
-        let response = prove(
+        let response = Box::pin(prove(
             Json(proof_request),
             Config {
                 data_layer_url: "http://127.0.0.1:9998".to_string(),
                 data_layer_api_key: "mock_api_key".to_string(),
                 version: "1.1.0".to_string(),
             },
-        )
+        ))
         .await;
         assert_eq!(response, StatusCode::BAD_REQUEST);
     }
