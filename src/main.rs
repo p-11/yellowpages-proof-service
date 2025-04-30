@@ -4,14 +4,26 @@ use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
 use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_msg_hash};
 use bitcoin::{Address as BitcoinAddress, Network, address::AddressType};
-use oqs::sig::{
-    Algorithm::MlDsa44, PublicKey as OqsPublicKey, Sig as OqsSig, Signature as OqsSignature,
+use ml_dsa::{
+    EncodedVerifyingKey as MlDsaEncodedVerifyingKey, MlDsa44, Signature as MlDsaSignature,
+    VerifyingKey as MlDsaVerifyingKey, signature::Verifier,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fmt;
 use std::str::FromStr;
+
+type ValidationResult = Result<
+    (
+        BitcoinAddress,
+        BitcoinMessageSignature,
+        MlDsaAddress,
+        MlDsaVerifyingKey<MlDsa44>,
+        MlDsaSignature<MlDsa44>,
+    ),
+    StatusCode,
+>;
 
 #[derive(Serialize, Deserialize)]
 struct AttestationRequest {
@@ -87,19 +99,6 @@ macro_rules! ok_or_bad_request {
             Ok(val) => val,
             Err(e) => {
                 eprintln!("{}: {}", $err_msg, e);
-                return Err(StatusCode::BAD_REQUEST);
-            }
-        }
-    };
-}
-
-// Macro for handling Options that should return BAD_REQUEST if None
-macro_rules! some_or_bad_request {
-    ($expr:expr, $err_msg:expr) => {
-        match $expr {
-            Some(val) => val,
-            None => {
-                eprintln!("{}", $err_msg);
                 return Err(StatusCode::BAD_REQUEST);
             }
         }
@@ -237,15 +236,6 @@ async fn prove(Json(proof_request): Json<ProofRequest>, config: Config) -> Statu
         proof_request.bitcoin_address, proof_request.ml_dsa_address,
     );
 
-    // Initialize ML-DSA 44 verifier first since we need it for validation
-    let ml_dsa_verifier = match OqsSig::new(MlDsa44) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Failed to initialize ML-DSA verifier: {e}");
-            return StatusCode::INTERNAL_SERVER_ERROR;
-        }
-    };
-
     // Step 1: Validate inputs
     let (
         bitcoin_address,
@@ -253,7 +243,7 @@ async fn prove(Json(proof_request): Json<ProofRequest>, config: Config) -> Statu
         ml_dsa_address,
         ml_dsa_public_key,
         ml_dsa_signed_message,
-    ) = match validate_inputs(&proof_request, &ml_dsa_verifier) {
+    ) = match validate_inputs(&proof_request) {
         Ok(result) => result,
         Err(status) => return status,
     };
@@ -264,12 +254,9 @@ async fn prove(Json(proof_request): Json<ProofRequest>, config: Config) -> Statu
     }
 
     // Step 3: Verify ML-DSA ownership
-    if let Err(status) = verify_ml_dsa_ownership(
-        &ml_dsa_address,
-        &ml_dsa_public_key,
-        &ml_dsa_signed_message,
-        &ml_dsa_verifier,
-    ) {
+    if let Err(status) =
+        verify_ml_dsa_ownership(&ml_dsa_address, &ml_dsa_public_key, &ml_dsa_signed_message)
+    {
         return status;
     }
 
@@ -299,19 +286,7 @@ async fn prove(Json(proof_request): Json<ProofRequest>, config: Config) -> Statu
     StatusCode::NO_CONTENT
 }
 
-fn validate_inputs(
-    proof_request: &ProofRequest,
-    ml_dsa_verifier: &OqsSig,
-) -> Result<
-    (
-        BitcoinAddress,
-        BitcoinMessageSignature,
-        MlDsaAddress,
-        OqsPublicKey,
-        OqsSignature,
-    ),
-    StatusCode,
-> {
+fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
     // Validate that all required fields have reasonable lengths to avoid decoding large amounts of data
     if proof_request.bitcoin_address.len() > 100 {
         bad_request!(
@@ -406,17 +381,16 @@ fn validate_inputs(
     );
 
     // Convert bytes to proper types
-    let ml_dsa_public_key = some_or_bad_request!(
-        ml_dsa_verifier.public_key_from_bytes(&ml_dsa_public_key_bytes),
-        "Failed to parse ML-DSA public key"
-    )
-    .to_owned();
+    let encoded_key = ok_or_bad_request!(
+        MlDsaEncodedVerifyingKey::<MlDsa44>::try_from(&ml_dsa_public_key_bytes[..]),
+        "Failed to parse ML-DSA encoded key"
+    );
+    let ml_dsa_public_key = MlDsaVerifyingKey::<MlDsa44>::decode(&encoded_key);
 
-    let ml_dsa_signed_message = some_or_bad_request!(
-        ml_dsa_verifier.signature_from_bytes(&ml_dsa_signed_message_bytes),
+    let ml_dsa_signed_message = ok_or_bad_request!(
+        MlDsaSignature::<MlDsa44>::try_from(&ml_dsa_signed_message_bytes[..]),
         "Failed to parse ML-DSA signature"
-    )
-    .to_owned();
+    );
 
     println!("Successfully parsed ML-DSA inputs");
 
@@ -492,9 +466,8 @@ fn verify_bitcoin_ownership(
 
 fn verify_ml_dsa_ownership(
     address: &MlDsaAddress,
-    public_key: &OqsPublicKey,
-    signature: &OqsSignature,
-    verifier: &OqsSig,
+    verifying_key: &MlDsaVerifyingKey<MlDsa44>,
+    signature: &MlDsaSignature<MlDsa44>,
 ) -> Result<(), StatusCode> {
     // Step 1: The message to verify is "hello world" (same as for Bitcoin)
     let message = "hello world";
@@ -502,15 +475,16 @@ fn verify_ml_dsa_ownership(
 
     // Step 2: Verify the signature
     ok_or_bad_request!(
-        verifier.verify(message_bytes, signature, public_key),
+        verifying_key.verify(message_bytes, signature),
         "Failed to verify ML-DSA signature"
     );
 
     println!("ML-DSA signature verified successfully");
 
     // Step 3: Verify that the public key matches the address
-    // The address should be the SHA256 hash of the public key
-    let computed_address = sha256::Hash::hash(public_key.as_ref()).to_byte_array();
+    // The address should be the SHA256 hash of the encoded public key
+    let encoded_key = verifying_key.encode();
+    let computed_address = sha256::Hash::hash(&encoded_key[..]).to_byte_array();
 
     if computed_address == address.public_key_hash {
         println!("ML-DSA address ownership verified: public key hash matches the address");
@@ -614,6 +588,7 @@ async fn upload_to_data_layer(
 mod tests {
     use super::*;
     use axum::{response::IntoResponse, routing::post};
+    use ml_dsa::{KeyGen, signature::Signer};
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
@@ -714,7 +689,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
+        let result = validate_inputs(&proof_request);
         assert!(result.is_ok(), "Validation should pass with valid inputs");
     }
 
@@ -728,7 +703,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
+        let result = validate_inputs(&proof_request);
         assert!(result.is_err(), "Validation should fail with empty address");
     }
 
@@ -742,7 +717,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
+        let result = validate_inputs(&proof_request);
         assert!(
             result.is_err(),
             "Validation should fail with invalid address"
@@ -759,7 +734,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
+        let result = validate_inputs(&proof_request);
         assert!(
             result.is_err(),
             "Validation should fail with non-P2PKH address"
@@ -776,7 +751,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
+        let result = validate_inputs(&proof_request);
         assert!(
             result.is_err(),
             "Validation should fail with short signature"
@@ -793,7 +768,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
+        let result = validate_inputs(&proof_request);
         assert!(
             result.is_err(),
             "Validation should fail with long signature"
@@ -810,7 +785,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
+        let result = validate_inputs(&proof_request);
         assert!(
             result.is_err(),
             "Validation should fail with invalid base64"
@@ -827,8 +802,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let (address, signature, _, _, _) =
-            validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap()).unwrap();
+        let (address, signature, _, _, _) = validate_inputs(&proof_request).unwrap();
         let result = verify_bitcoin_ownership(&address, &signature);
 
         assert!(
@@ -848,8 +822,7 @@ mod tests {
         };
 
         // Validation should pass since it's a valid signature format, just for the wrong message
-        let (address, signature, _, _, _) =
-            validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap()).unwrap();
+        let (address, signature, _, _, _) = validate_inputs(&proof_request).unwrap();
 
         // Verification should fail because the signature is for a different message
         let result = verify_bitcoin_ownership(&address, &signature);
@@ -869,7 +842,7 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &OqsSig::new(MlDsa44).unwrap());
+        let result = validate_inputs(&proof_request);
         assert!(
             result.is_err(),
             "Validation should fail with invalid ML-DSA address"
@@ -932,14 +905,14 @@ mod tests {
         };
 
         // Call the main function with the request
-        let response = prove(
+        let response = Box::pin(prove(
             Json(proof_request),
             Config {
                 data_layer_url: "http://127.0.0.1:9998".to_string(),
                 data_layer_api_key: "mock_api_key".to_string(),
                 version: TEST_VERSION.to_string(),
             },
-        )
+        ))
         .await;
         assert_eq!(response, StatusCode::NO_CONTENT);
     }
@@ -955,36 +928,35 @@ mod tests {
         };
 
         // This should fail during validation with a BAD_REQUEST
-        let response = prove(
+        let response = Box::pin(prove(
             Json(proof_request),
             Config {
                 data_layer_url: "http://127.0.0.1:9998".to_string(),
                 data_layer_api_key: "mock_api_key".to_string(),
                 version: "1.1.0".to_string(),
             },
-        )
+        ))
         .await;
         assert_eq!(response, StatusCode::BAD_REQUEST);
     }
 
     #[test]
     fn test_ml_dsa_verification_succeeds() {
-        let verifier = OqsSig::new(MlDsa44).unwrap();
-        let message = "hello world";
-
-        // Create a new keypair
-        let (public_key, secret_key) = verifier.keypair().unwrap();
+        let seed: [u8; 32] = rand::random();
+        let keypair = MlDsa44::key_gen_internal(&seed.into());
+        let message = b"hello world";
 
         // Sign the message
-        let signature = verifier.sign(message.as_bytes(), &secret_key).unwrap();
+        let signature = keypair.signing_key().sign(message);
 
         // Create the address from the public key
         let address = MlDsaAddress {
-            public_key_hash: sha256::Hash::hash(public_key.as_ref()).to_byte_array(),
+            public_key_hash: sha256::Hash::hash(&keypair.verifying_key().encode()[..])
+                .to_byte_array(),
         };
 
         // Verify ownership
-        let result = verify_ml_dsa_ownership(&address, &public_key, &signature, &verifier);
+        let result = verify_ml_dsa_ownership(&address, keypair.verifying_key(), &signature);
         assert!(
             result.is_ok(),
             "ML-DSA verification should succeed with valid inputs"
@@ -993,24 +965,21 @@ mod tests {
 
     #[test]
     fn test_ml_dsa_verification_fails_wrong_message() {
-        let verifier = OqsSig::new(MlDsa44).unwrap();
-        let wrong_message = "wrong message";
-
-        // Create a new keypair
-        let (public_key, secret_key) = verifier.keypair().unwrap();
+        let seed: [u8; 32] = rand::random();
+        let keypair = MlDsa44::key_gen_internal(&seed.into());
+        let wrong_message = b"wrong message";
 
         // Sign the wrong message
-        let signature = verifier
-            .sign(wrong_message.as_bytes(), &secret_key)
-            .unwrap();
+        let signature = keypair.signing_key().sign(wrong_message);
 
         // Create the address from the public key
         let address = MlDsaAddress {
-            public_key_hash: sha256::Hash::hash(public_key.as_ref()).to_byte_array(),
+            public_key_hash: sha256::Hash::hash(&keypair.verifying_key().encode()[..])
+                .to_byte_array(),
         };
 
         // Verify should fail because signature was for wrong message
-        let result = verify_ml_dsa_ownership(&address, &public_key, &signature, &verifier);
+        let result = verify_ml_dsa_ownership(&address, keypair.verifying_key(), &signature);
         assert!(
             result.is_err(),
             "ML-DSA verification should fail with wrong message"
@@ -1019,23 +988,23 @@ mod tests {
 
     #[test]
     fn test_ml_dsa_verification_fails_wrong_address() {
-        let verifier = OqsSig::new(MlDsa44).unwrap();
-        let message = "hello world";
-
-        // Create two keypairs
-        let (public_key1, secret_key1) = verifier.keypair().unwrap();
-        let (public_key2, _) = verifier.keypair().unwrap();
+        let seed1: [u8; 32] = rand::random();
+        let seed2: [u8; 32] = rand::random();
+        let keypair1 = MlDsa44::key_gen_internal(&seed1.into());
+        let keypair2 = MlDsa44::key_gen_internal(&seed2.into());
+        let message = b"hello world";
 
         // Sign with first key
-        let signature = verifier.sign(message.as_bytes(), &secret_key1).unwrap();
+        let signature = keypair1.signing_key().sign(message);
 
         // Create address from second public key
         let wrong_address = MlDsaAddress {
-            public_key_hash: sha256::Hash::hash(public_key2.as_ref()).to_byte_array(),
+            public_key_hash: sha256::Hash::hash(&keypair2.verifying_key().encode()[..])
+                .to_byte_array(),
         };
 
         // Verify should fail because address doesn't match the public key
-        let result = verify_ml_dsa_ownership(&wrong_address, &public_key1, &signature, &verifier);
+        let result = verify_ml_dsa_ownership(&wrong_address, keypair1.verifying_key(), &signature);
         assert!(
             result.is_err(),
             "ML-DSA verification should fail with mismatched address"

@@ -10,5 +10,8 @@ serde = { version = "1.0", features = ["derive"] }
 reqwest = { version = "0.12.15", features = ["json", "rustls-tls"], default-features = false }
 base64 = "0.22"
 bitcoin = "0.32.5"
-oqs = { version = "0.10.1", features = ["vendored", "vendored_openssl"] }
 serde_json = "1.0"
+ml-dsa = "0.0.4"
+
+[dev-dependencies]
+rand = "0.9.1"
