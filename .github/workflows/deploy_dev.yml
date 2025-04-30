@@ -25,7 +25,7 @@ env:
   EV_ENCLAVE_SIGNING_KEY: ${{ secrets.DEV_EV_ENCLAVE_SIGNING_KEY }}
   YP_DS_API_URL: ${{ secrets.DEV_YP_DS_API_URL }}
   YP_DS_API_KEY: ${{ secrets.DEV_YP_DS_API_KEY }}
-  ENCLAVE_DEBUG: true
+  ENCLAVE_DEBUG: false
 
 jobs:
   deploy:
