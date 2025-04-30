@@ -4,7 +4,10 @@ use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
 use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_msg_hash};
 use bitcoin::{Address as BitcoinAddress, Network, address::AddressType};
-use ml_dsa::{MlDsa44, signature::Verifier};
+use ml_dsa::{
+    EncodedVerifyingKey as MlDsaEncodedVerifyingKey, MlDsa44, Signature as MlDsaSignature,
+    VerifyingKey as MlDsaVerifyingKey, signature::Verifier,
+};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -279,8 +282,8 @@ fn validate_inputs(
         BitcoinAddress,
         BitcoinMessageSignature,
         MlDsaAddress,
-        ml_dsa::VerifyingKey<MlDsa44>,
-        ml_dsa::Signature<MlDsa44>,
+        MlDsaVerifyingKey<MlDsa44>,
+        MlDsaSignature<MlDsa44>,
     ),
     StatusCode,
 > {
@@ -379,13 +382,13 @@ fn validate_inputs(
 
     // Convert bytes to proper types
     let encoded_key = ok_or_bad_request!(
-        ml_dsa::EncodedVerifyingKey::<MlDsa44>::try_from(&ml_dsa_public_key_bytes[..]),
+        MlDsaEncodedVerifyingKey::<MlDsa44>::try_from(&ml_dsa_public_key_bytes[..]),
         "Failed to parse ML-DSA encoded key"
     );
-    let ml_dsa_public_key = ml_dsa::VerifyingKey::<MlDsa44>::decode(&encoded_key);
+    let ml_dsa_public_key = MlDsaVerifyingKey::<MlDsa44>::decode(&encoded_key);
 
     let ml_dsa_signed_message = ok_or_bad_request!(
-        ml_dsa::Signature::<MlDsa44>::try_from(&ml_dsa_signed_message_bytes[..]),
+        MlDsaSignature::<MlDsa44>::try_from(&ml_dsa_signed_message_bytes[..]),
         "Failed to parse ML-DSA signature"
     );
 
@@ -463,8 +466,8 @@ fn verify_bitcoin_ownership(
 
 fn verify_ml_dsa_ownership(
     address: &MlDsaAddress,
-    verifying_key: &ml_dsa::VerifyingKey<MlDsa44>,
-    signature: &ml_dsa::Signature<MlDsa44>,
+    verifying_key: &MlDsaVerifyingKey<MlDsa44>,
+    signature: &MlDsaSignature<MlDsa44>,
 ) -> Result<(), StatusCode> {
     // Step 1: The message to verify is "hello world" (same as for Bitcoin)
     let message = "hello world";
@@ -585,7 +588,7 @@ async fn upload_to_data_layer(
 mod tests {
     use super::*;
     use axum::{response::IntoResponse, routing::post};
-    use ml_dsa::{KeyGen, MlDsa44, signature::Signer};
+    use ml_dsa::{KeyGen, signature::Signer};
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
