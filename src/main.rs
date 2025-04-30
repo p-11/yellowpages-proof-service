@@ -615,6 +615,9 @@ mod tests {
     use super::*;
     use axum::{response::IntoResponse, routing::post};
 
+    // Add a constant for our mock attestation document
+    const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
+
     // Mock handler for attestation requests
     fn mock_attestation_handler(
         expected_bitcoin_address: &str,
@@ -639,11 +642,10 @@ mod tests {
             return (StatusCode::BAD_REQUEST, "Address mismatch in challenge").into_response();
         }
 
-        let mock_attestation = b"mock_attestation_document_bytes";
         (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-            mock_attestation,
+            MOCK_ATTESTATION_DOCUMENT,
         )
             .into_response()
     }
@@ -673,8 +675,15 @@ mod tests {
         if request.version != expected_version {
             return (StatusCode::BAD_REQUEST, "Invalid version").into_response();
         }
-        if request.proof.is_empty() {
-            return (StatusCode::BAD_REQUEST, "Missing proof").into_response();
+
+        // Validate that the proof matches our mock attestation document
+        let expected_proof = general_purpose::STANDARD.encode(MOCK_ATTESTATION_DOCUMENT);
+        if request.proof != expected_proof {
+            return (
+                StatusCode::BAD_REQUEST,
+                "Proof does not match attestation document",
+            )
+                .into_response();
         }
 
         StatusCode::OK.into_response()
