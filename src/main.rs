@@ -135,7 +135,7 @@ macro_rules! ok_or_internal_error {
     };
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct CreateProofRequest {
     btc_address: String,
     ml_dsa_44_address: String,
@@ -243,9 +243,9 @@ async fn prove(Json(proof_request): Json<ProofRequest>, config: Config) -> Statu
         ml_dsa_public_key,
         ml_dsa_signed_message,
     ) = match validate_inputs(&proof_request, &ml_dsa_verifier) {
-        Ok(result) => result,
-        Err(status) => return status,
-    };
+            Ok(result) => result,
+            Err(status) => return status,
+        };
 
     // Step 2: Verify Bitcoin ownership
     if let Err(status) = verify_bitcoin_ownership(&bitcoin_address, &bitcoin_signed_message) {
@@ -595,6 +595,37 @@ mod tests {
             .into_response()
     }
 
+    // Mock handler for data layer requests
+    fn mock_data_layer_handler(
+        expected_bitcoin_address: &str,
+        expected_ml_dsa_address: &str,
+        request: (axum::http::HeaderMap, Json<CreateProofRequest>),
+    ) -> impl IntoResponse {
+        let (headers, Json(request)) = request;
+
+        // Check for API key header and validate its value
+        match headers.get("x-api-key") {
+            Some(api_key) if api_key == "mock_api_key" => (),
+            _ => return (StatusCode::UNAUTHORIZED, "Invalid API key").into_response(),
+        }
+
+        // Validate request fields
+        if request.btc_address != expected_bitcoin_address {
+            return (StatusCode::BAD_REQUEST, "Invalid bitcoin address").into_response();
+        }
+        if request.ml_dsa_44_address != expected_ml_dsa_address {
+            return (StatusCode::BAD_REQUEST, "Invalid ML-DSA address").into_response();
+        }
+        if request.version != "1.1.0" {
+            return (StatusCode::BAD_REQUEST, "Invalid version").into_response();
+        }
+        if request.proof.is_empty() {
+            return (StatusCode::BAD_REQUEST, "Missing proof").into_response();
+        }
+
+        StatusCode::OK.into_response()
+    }
+
     // Constants for test data
     const VALID_BITCOIN_ADDRESS: &str = "1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm"; // P2PKH address
     const VALID_SIGNATURE: &str =
@@ -785,12 +816,23 @@ mod tests {
     #[tokio::test]
     async fn test_end_to_end() {
         // Start mock attestation server
-        let mock_attestation_app = Router::new().route(
-            "/attestation-doc",
-            post(|req| async move {
-                mock_attestation_handler(VALID_BITCOIN_ADDRESS, VALID_ML_DSA_ADDRESS, req)
-            }),
-        );
+        let mock_attestation_app = Router::new()
+            .route(
+                "/attestation-doc",
+                post(|req| async move {
+                    mock_attestation_handler(VALID_BITCOIN_ADDRESS, VALID_ML_DSA_ADDRESS, req)
+                }),
+            )
+            .route(
+                "/v1/proofs",
+                post(|req| async move {
+                    mock_data_layer_handler(
+                        VALID_BITCOIN_ADDRESS,
+                        VALID_ML_DSA_ADDRESS,
+                        req,
+                    )
+                }),
+            );
 
         let mock_attestation_listener = tokio::net::TcpListener::bind("127.0.0.1:9999")
             .await
