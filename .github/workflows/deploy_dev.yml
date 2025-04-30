@@ -119,7 +119,7 @@ jobs:
           echo "Sending PCR JSON to data service…"
           # -sS: silent but show errors; -f: fail on HTTP 4xx/5xx
           curl -sS -f \
-            -X POST "${{ env.YP_DS_API_URL }}/v1/proofs/measurements/aws-nitro-pcr-sets" \
+            -X POST "https://${{ env.YP_DS_API_URL }}/v1/proofs/measurements/aws-nitro-pcr-sets" \
             -H "x-api-key: ${{ env.YP_DS_API_KEY }}" \
             -H "Content-Type: application/json" \
             --data @pcrs.json \
