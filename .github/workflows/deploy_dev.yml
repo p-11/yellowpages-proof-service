@@ -25,6 +25,7 @@ env:
   EV_ENCLAVE_SIGNING_KEY: ${{ secrets.DEV_EV_ENCLAVE_SIGNING_KEY }}
   YP_DS_API_URL: ${{ secrets.DEV_YP_DS_API_URL }}
   YP_DS_API_KEY: ${{ secrets.DEV_YP_DS_API_KEY }}
+  ENCLAVE_DEBUG: true
 
 jobs:
   deploy:
@@ -54,6 +55,18 @@ jobs:
 
       - name: Checkout Repo
         uses: actions/checkout@v4
+
+      - name: Render config.toml
+        env:
+          YP_DS_API_URL: ${{ env.YP_DS_API_URL }}
+          ENCLAVE_DEBUG: ${{ env.ENCLAVE_DEBUG }}
+        run: envsubst < enclave.toml.tmpl > enclave.toml
+
+      - name: TEMP Show rendered config.toml
+        run: |
+          echo "⎡─ enclave.toml ──────────────────────────⎤"
+          cat enclave.toml
+          echo "⎣────────────────────────────────────────⎦"
 
       - name: Ensure Clippy is available
         run: rustup component add clippy
@@ -88,6 +101,7 @@ jobs:
           # deploy and emit a compact pcr.json
           ev enclave deploy -v \
             --build-arg VERSION=${{ env.VERSION }} \
+            --config=./enclave.toml \
             | tee raw.json \
             | jq -c \
                 --arg version ${{ env.VERSION }} \
@@ -111,7 +125,7 @@ jobs:
           echo "Sending PCR JSON to data service…"
           # -sS: silent but show errors; -f: fail on HTTP 4xx/5xx
           curl -sS -f \
-            -X POST "${{ env.YP_DS_API_URL }}" \
+            -X POST "${{ env.YP_DS_API_URL }}/v1/proofs/measurements/aws-nitro-pcr-sets" \
             -H "x-api-key: ${{ env.YP_DS_API_KEY }}" \
             -H "Content-Type: application/json" \
             --data @pcrs.json \
