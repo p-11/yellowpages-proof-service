@@ -1,4 +1,4 @@
-use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
+use axum::{Json, Router, http::StatusCode, routing::post};
 use base64::{Engine, engine::general_purpose};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
@@ -9,6 +9,7 @@ use oqs::sig::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fmt;
 use std::str::FromStr;
 
@@ -38,6 +39,14 @@ struct ProofRequest {
     ml_dsa_signed_message: String,
     ml_dsa_address: String,
     ml_dsa_public_key: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct UploadProofRequest {
+    btc_address: String,
+    ml_dsa_44_address: String,
+    version: String,
+    proof: String,
 }
 
 #[derive(Debug)]
@@ -134,15 +143,85 @@ macro_rules! ok_or_internal_error {
     };
 }
 
+#[derive(Clone)]
+struct Config {
+    data_layer_url: String,
+    data_layer_api_key: String,
+    version: String,
+}
+
+impl Config {
+    // Basic sanity check to catch mis-entered version strings in env vars.
+    // This is not a comprehensive semver validation.
+    fn sanity_check_semver(version: &str) -> Result<(), String> {
+        let parts: Vec<&str> = version.split('.').collect();
+        if parts.len() != 3 {
+            return Err("Version must be in format x.y.z".to_string());
+        }
+        Ok(())
+    }
+
+    // Basic sanity check to catch mis-entered URLs in env vars.
+    // This is not a comprehensive URL validation.
+    fn sanity_check_url(url: &str) -> Result<(), String> {
+        #[cfg(test)]
+        {
+            if !url.starts_with("http://") {
+                return Err("URL starts with http:// in test".to_string());
+            }
+        }
+
+        #[cfg(not(test))]
+        {
+            if !url.starts_with("https://") {
+                return Err("URL must start with https://".to_string());
+            }
+        }
+
+        Ok(())
+    }
+
+    // Basic sanity check to catch empty API keys in env vars.
+    fn sanity_check_api_key(key: &str) -> Result<(), String> {
+        if key.is_empty() {
+            return Err("API key cannot be empty".to_string());
+        }
+        Ok(())
+    }
+
+    fn from_env() -> Result<Self, String> {
+        let data_layer_url = env::var("YP_DS_API_BASE_URL")
+            .map_err(|_| "YP_DS_API_BASE_URL environment variable not set")?;
+        Self::sanity_check_url(&data_layer_url)?;
+
+        let data_layer_api_key =
+            env::var("YP_DS_API_KEY").map_err(|_| "YP_DS_API_KEY environment variable not set")?;
+        Self::sanity_check_api_key(&data_layer_api_key)?;
+
+        let version = env::var("VERSION").map_err(|_| "VERSION environment variable not set")?;
+        Self::sanity_check_semver(&version)?;
+
+        Ok(Config {
+            data_layer_url,
+            data_layer_api_key,
+            version,
+        })
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    // read VERSION from the environment, fallback to "unknown"
-    let version = std::env::var("VERSION").unwrap_or_else(|_| "unknown".to_string());
-
-    println!("Version: {}", version);
+    // Parse config from environment
+    let config = match Config::from_env() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Failed to load config: {e}");
+            std::process::exit(1);
+        }
+    };
 
     // build our application with routes
-    let app = Router::new().route("/prove", post(prove));
+    let app = Router::new().route("/prove", post(move |req| prove(req, config.clone())));
 
     println!("Server running on http://0.0.0.0:8008");
 
@@ -151,7 +230,7 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
+async fn prove(Json(proof_request): Json<ProofRequest>, config: Config) -> StatusCode {
     // Log the received data
     println!(
         "Received proof request - Bitcoin Address: {}, ML-DSA Address: {}",
@@ -195,15 +274,29 @@ async fn prove(Json(proof_request): Json<ProofRequest>) -> impl IntoResponse {
     }
 
     // Step 4: Get attestation document with embedded addresses
-    let _attestation_doc_base64 =
+    let attestation_doc_base64 =
         match embed_addresses_in_proof(&bitcoin_address, &ml_dsa_address).await {
             Ok(doc) => doc,
             Err(status) => return status,
         };
 
+    // Step 5: Upload to data layer
+    if let Err(status) = upload_to_data_layer(
+        &bitcoin_address,
+        &ml_dsa_address,
+        &attestation_doc_base64,
+        &config.version,
+        &config.data_layer_url,
+        &config.data_layer_api_key,
+    )
+    .await
+    {
+        return status;
+    }
+
     // Success path
     println!("All verifications completed successfully");
-    StatusCode::OK
+    StatusCode::NO_CONTENT
 }
 
 fn validate_inputs(
@@ -477,10 +570,53 @@ async fn embed_addresses_in_proof(
     Ok(general_purpose::STANDARD.encode(attestation_bytes))
 }
 
+async fn upload_to_data_layer(
+    bitcoin_address: &BitcoinAddress,
+    ml_dsa_address: &MlDsaAddress,
+    attestation_doc_base64: &str,
+    version: &str,
+    data_layer_url: &str,
+    data_layer_api_key: &str,
+) -> Result<(), StatusCode> {
+    let client = Client::new();
+
+    let request = UploadProofRequest {
+        btc_address: bitcoin_address.to_string(),
+        ml_dsa_44_address: ml_dsa_address.to_string(),
+        version: version.to_string(),
+        proof: attestation_doc_base64.to_string(),
+    };
+
+    // Send request to data layer
+    let response = ok_or_internal_error!(
+        client
+            .post(format!("{data_layer_url}/v1/proofs"))
+            .header("x-api-key", data_layer_api_key)
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await,
+        "Failed to send request to data layer"
+    );
+
+    // Check if the request was successful
+    if !response.status().is_success() {
+        internal_error!(
+            "Data layer returned non-success status: {}",
+            response.status()
+        );
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::routing::post;
+    use axum::{response::IntoResponse, routing::post};
+
+    // Add a constant for our mock attestation document
+    const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
 
     // Mock handler for attestation requests
     fn mock_attestation_handler(
@@ -506,13 +642,51 @@ mod tests {
             return (StatusCode::BAD_REQUEST, "Address mismatch in challenge").into_response();
         }
 
-        let mock_attestation = b"mock_attestation_document_bytes";
         (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-            mock_attestation,
+            MOCK_ATTESTATION_DOCUMENT,
         )
             .into_response()
+    }
+
+    // Mock handler for data layer requests
+    fn mock_data_layer_handler(
+        expected_bitcoin_address: &str,
+        expected_ml_dsa_address: &str,
+        expected_version: &str,
+        request: (axum::http::HeaderMap, Json<UploadProofRequest>),
+    ) -> impl IntoResponse {
+        let (headers, Json(request)) = request;
+
+        // Check for API key header and validate its value
+        match headers.get("x-api-key") {
+            Some(api_key) if api_key == "mock_api_key" => (),
+            _ => return (StatusCode::UNAUTHORIZED, "Invalid API key").into_response(),
+        }
+
+        // Validate request fields
+        if request.btc_address != expected_bitcoin_address {
+            return (StatusCode::BAD_REQUEST, "Invalid bitcoin address").into_response();
+        }
+        if request.ml_dsa_44_address != expected_ml_dsa_address {
+            return (StatusCode::BAD_REQUEST, "Invalid ML-DSA address").into_response();
+        }
+        if request.version != expected_version {
+            return (StatusCode::BAD_REQUEST, "Invalid version").into_response();
+        }
+
+        // Validate that the proof matches our mock attestation document
+        let expected_proof = general_purpose::STANDARD.encode(MOCK_ATTESTATION_DOCUMENT);
+        if request.proof != expected_proof {
+            return (
+                StatusCode::BAD_REQUEST,
+                "Proof does not match attestation document",
+            )
+                .into_response();
+        }
+
+        StatusCode::OK.into_response()
     }
 
     // Constants for test data
@@ -704,6 +878,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_end_to_end() {
+        const TEST_VERSION: &str = "1.1.0";
+
         // Start mock attestation server
         let mock_attestation_app = Router::new().route(
             "/attestation-doc",
@@ -712,18 +888,39 @@ mod tests {
             }),
         );
 
+        // Start mock data layer server
+        let mock_data_layer_app = Router::new().route(
+            "/v1/proofs",
+            post(|req| async move {
+                mock_data_layer_handler(
+                    VALID_BITCOIN_ADDRESS,
+                    VALID_ML_DSA_ADDRESS,
+                    TEST_VERSION,
+                    req,
+                )
+            }),
+        );
+
         let mock_attestation_listener = tokio::net::TcpListener::bind("127.0.0.1:9999")
             .await
             .unwrap();
+        let mock_data_layer_listener = tokio::net::TcpListener::bind("127.0.0.1:9998")
+            .await
+            .unwrap();
 
-        // Spawn the mock server to run concurrently
+        // Spawn both servers to run concurrently
         tokio::spawn(async move {
             axum::serve(mock_attestation_listener, mock_attestation_app)
                 .await
                 .unwrap();
         });
+        tokio::spawn(async move {
+            axum::serve(mock_data_layer_listener, mock_data_layer_app)
+                .await
+                .unwrap();
+        });
 
-        // Give the server a moment to start
+        // Give the servers a moment to start
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let proof_request = ProofRequest {
@@ -735,8 +932,16 @@ mod tests {
         };
 
         // Call the main function with the request
-        let response = prove(Json(proof_request)).await.into_response();
-        assert_eq!(response.status(), StatusCode::OK);
+        let response = prove(
+            Json(proof_request),
+            Config {
+                data_layer_url: "http://127.0.0.1:9998".to_string(),
+                data_layer_api_key: "mock_api_key".to_string(),
+                version: TEST_VERSION.to_string(),
+            },
+        )
+        .await;
+        assert_eq!(response, StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
@@ -750,8 +955,16 @@ mod tests {
         };
 
         // This should fail during validation with a BAD_REQUEST
-        let response = prove(Json(proof_request)).await.into_response();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = prove(
+            Json(proof_request),
+            Config {
+                data_layer_url: "http://127.0.0.1:9998".to_string(),
+                data_layer_api_key: "mock_api_key".to_string(),
+                version: "1.1.0".to_string(),
+            },
+        )
+        .await;
+        assert_eq!(response, StatusCode::BAD_REQUEST);
     }
 
     #[test]
@@ -886,5 +1099,38 @@ mod tests {
         // Verify the values match
         assert_eq!(decoded_data.bitcoin_address, VALID_BITCOIN_ADDRESS);
         assert_eq!(decoded_data.ml_dsa_44_address, VALID_ML_DSA_ADDRESS);
+    }
+
+    #[test]
+    fn test_sanity_check_semver() {
+        // Valid cases - just check for three parts
+        assert!(Config::sanity_check_semver("1.2.3").is_ok());
+        assert!(Config::sanity_check_semver("a.b.c").is_ok()); // Passes as we only check parts
+        assert!(Config::sanity_check_semver("0.0.0").is_ok());
+
+        // Invalid cases - wrong number of parts
+        assert!(Config::sanity_check_semver("1.2").is_err());
+        assert!(Config::sanity_check_semver("1.2.3.4").is_err());
+        assert!(Config::sanity_check_semver("").is_err());
+    }
+
+    #[test]
+    fn test_sanity_check_url() {
+        // Valid case - http:// in test
+        assert!(Config::sanity_check_url("http://anything").is_ok());
+
+        // Invalid cases
+        assert!(Config::sanity_check_url("https://anything").is_err()); // https:// not allowed in test
+        assert!(Config::sanity_check_url("ftp://example.com").is_err());
+        assert!(Config::sanity_check_url("").is_err());
+    }
+
+    #[test]
+    fn test_sanity_check_api_key() {
+        // Valid case - non-empty string
+        assert!(Config::sanity_check_api_key("any-key").is_ok());
+
+        // Invalid case - empty string
+        assert!(Config::sanity_check_api_key("").is_err());
     }
 }
