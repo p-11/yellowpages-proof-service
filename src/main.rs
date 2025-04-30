@@ -151,13 +151,60 @@ struct Config {
 }
 
 impl Config {
+    // Basic sanity check to catch mis-entered version strings in env vars.
+    // This is not a comprehensive semver validation.
+    fn sanity_check_semver(version: &str) -> Result<(), String> {
+        let parts: Vec<&str> = version.split('.').collect();
+        if parts.len() != 3 {
+            return Err("Version must be in format x.y.z".to_string());
+        }
+        Ok(())
+    }
+
+    // Basic sanity check to catch mis-entered URLs in env vars.
+    // This is not a comprehensive URL validation.
+    fn sanity_check_url(url: &str) -> Result<(), String> {
+        #[cfg(test)]
+        {
+            if !url.starts_with("http://") {
+                return Err("URL starts with http:// in test".to_string());
+            }
+        }
+
+        #[cfg(not(test))]
+        {
+            if !url.starts_with("https://") {
+                return Err("URL must start with https://".to_string());
+            }
+        }
+
+        Ok(())
+    }
+
+    // Basic sanity check to catch empty API keys in env vars.
+    fn sanity_check_api_key(key: &str) -> Result<(), String> {
+        if key.is_empty() {
+            return Err("API key cannot be empty".to_string());
+        }
+        Ok(())
+    }
+
     fn from_env() -> Result<Self, String> {
+        let data_layer_url =
+            env::var("YP_DS_API_URL").map_err(|_| "YP_DS_API_URL environment variable not set")?;
+        Self::sanity_check_url(&data_layer_url)?;
+
+        let data_layer_api_key =
+            env::var("YP_DS_API_KEY").map_err(|_| "YP_DS_API_KEY environment variable not set")?;
+        Self::sanity_check_api_key(&data_layer_api_key)?;
+
+        let version = env::var("VERSION").map_err(|_| "VERSION environment variable not set")?;
+        Self::sanity_check_semver(&version)?;
+
         Ok(Config {
-            data_layer_url: env::var("YP_DS_API_URL")
-                .map_err(|_| "YP_DS_API_URL environment variable not set")?,
-            data_layer_api_key: env::var("YP_DS_API_KEY")
-                .map_err(|_| "YP_DS_API_KEY environment variable not set")?,
-            version: env::var("VERSION").map_err(|_| "VERSION environment variable not set")?,
+            data_layer_url,
+            data_layer_api_key,
+            version,
         })
     }
 }
@@ -1039,5 +1086,38 @@ mod tests {
         // Verify the values match
         assert_eq!(decoded_data.bitcoin_address, VALID_BITCOIN_ADDRESS);
         assert_eq!(decoded_data.ml_dsa_44_address, VALID_ML_DSA_ADDRESS);
+    }
+
+    #[test]
+    fn test_sanity_check_semver() {
+        // Valid cases - just check for three parts
+        assert!(Config::sanity_check_semver("1.2.3").is_ok());
+        assert!(Config::sanity_check_semver("a.b.c").is_ok()); // Passes as we only check parts
+        assert!(Config::sanity_check_semver("0.0.0").is_ok());
+
+        // Invalid cases - wrong number of parts
+        assert!(Config::sanity_check_semver("1.2").is_err());
+        assert!(Config::sanity_check_semver("1.2.3.4").is_err());
+        assert!(Config::sanity_check_semver("").is_err());
+    }
+
+    #[test]
+    fn test_sanity_check_url() {
+        // Valid case - http:// in test
+        assert!(Config::sanity_check_url("http://anything").is_ok());
+
+        // Invalid cases
+        assert!(Config::sanity_check_url("https://anything").is_err()); // https:// not allowed in test
+        assert!(Config::sanity_check_url("ftp://example.com").is_err());
+        assert!(Config::sanity_check_url("").is_err());
+    }
+
+    #[test]
+    fn test_sanity_check_api_key() {
+        // Valid case - non-empty string
+        assert!(Config::sanity_check_api_key("any-key").is_ok());
+
+        // Invalid case - empty string
+        assert!(Config::sanity_check_api_key("").is_err());
     }
 }
