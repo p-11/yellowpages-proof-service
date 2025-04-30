@@ -190,8 +190,8 @@ impl Config {
     }
 
     fn from_env() -> Result<Self, String> {
-        let data_layer_url =
-            env::var("YP_DS_API_URL").map_err(|_| "YP_DS_API_URL environment variable not set")?;
+        let data_layer_url = env::var("YP_DS_API_BASE_URL")
+            .map_err(|_| "YP_DS_API_BASE_URL environment variable not set")?;
         Self::sanity_check_url(&data_layer_url)?;
 
         let data_layer_api_key =
@@ -285,7 +285,9 @@ async fn prove(Json(proof_request): Json<ProofRequest>, config: Config) -> Statu
         &bitcoin_address,
         &ml_dsa_address,
         &attestation_doc_base64,
-        &config,
+        &config.version,
+        &config.data_layer_url,
+        &config.data_layer_api_key,
     )
     .await
     {
@@ -572,22 +574,24 @@ async fn upload_to_data_layer(
     bitcoin_address: &BitcoinAddress,
     ml_dsa_address: &MlDsaAddress,
     attestation_doc_base64: &str,
-    config: &Config,
+    version: &str,
+    data_layer_url: &str,
+    data_layer_api_key: &str,
 ) -> Result<(), StatusCode> {
     let client = Client::new();
 
     let request = UploadProofRequest {
         btc_address: bitcoin_address.to_string(),
         ml_dsa_44_address: ml_dsa_address.to_string(),
-        version: config.version.clone(),
+        version: version.to_string(),
         proof: attestation_doc_base64.to_string(),
     };
 
     // Send request to data layer
     let response = ok_or_internal_error!(
         client
-            .post(format!("{}/v1/proofs", config.data_layer_url))
-            .header("x-api-key", &config.data_layer_api_key)
+            .post(format!("{data_layer_url}/v1/proofs"))
+            .header("x-api-key", data_layer_api_key)
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
