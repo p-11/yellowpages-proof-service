@@ -1,4 +1,4 @@
-use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
+use axum::{Json, Router, http::StatusCode, routing::post};
 use base64::{Engine, engine::general_purpose};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
@@ -243,9 +243,9 @@ async fn prove(Json(proof_request): Json<ProofRequest>, config: Config) -> Statu
         ml_dsa_public_key,
         ml_dsa_signed_message,
     ) = match validate_inputs(&proof_request, &ml_dsa_verifier) {
-            Ok(result) => result,
-            Err(status) => return status,
-        };
+        Ok(result) => result,
+        Err(status) => return status,
+    };
 
     // Step 2: Verify Bitcoin ownership
     if let Err(status) = verify_bitcoin_ownership(&bitcoin_address, &bitcoin_signed_message) {
@@ -560,7 +560,7 @@ async fn embed_addresses_in_proof(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::routing::post;
+    use axum::{response::IntoResponse, routing::post};
 
     // Mock handler for attestation requests
     fn mock_attestation_handler(
@@ -816,36 +816,42 @@ mod tests {
     #[tokio::test]
     async fn test_end_to_end() {
         // Start mock attestation server
-        let mock_attestation_app = Router::new()
-            .route(
-                "/attestation-doc",
-                post(|req| async move {
-                    mock_attestation_handler(VALID_BITCOIN_ADDRESS, VALID_ML_DSA_ADDRESS, req)
-                }),
-            )
-            .route(
-                "/v1/proofs",
-                post(|req| async move {
-                    mock_data_layer_handler(
-                        VALID_BITCOIN_ADDRESS,
-                        VALID_ML_DSA_ADDRESS,
-                        req,
-                    )
-                }),
-            );
+        let mock_attestation_app = Router::new().route(
+            "/attestation-doc",
+            post(|req| async move {
+                mock_attestation_handler(VALID_BITCOIN_ADDRESS, VALID_ML_DSA_ADDRESS, req)
+            }),
+        );
 
+        // Start mock data layer server
+        let mock_data_layer_app = Router::new().route(
+            "/v1/proofs",
+            post(|req| async move {
+                mock_data_layer_handler(VALID_BITCOIN_ADDRESS, VALID_ML_DSA_ADDRESS, req)
+            }),
+        );
+
+        // Bind servers to different ports
         let mock_attestation_listener = tokio::net::TcpListener::bind("127.0.0.1:9999")
             .await
             .unwrap();
+        let mock_data_layer_listener = tokio::net::TcpListener::bind("127.0.0.1:9998")
+            .await
+            .unwrap();
 
-        // Spawn the mock server to run concurrently
+        // Spawn both servers to run concurrently
         tokio::spawn(async move {
             axum::serve(mock_attestation_listener, mock_attestation_app)
                 .await
                 .unwrap();
         });
+        tokio::spawn(async move {
+            axum::serve(mock_data_layer_listener, mock_data_layer_app)
+                .await
+                .unwrap();
+        });
 
-        // Give the server a moment to start
+        // Give the servers a moment to start
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let proof_request = ProofRequest {
@@ -860,7 +866,7 @@ mod tests {
         let response = prove(
             Json(proof_request),
             Config {
-                data_layer_url: "http://127.0.0.1:9999".to_string(),
+                data_layer_url: "http://127.0.0.1:9998".to_string(), // Updated to use new data layer port
                 data_layer_api_key: "mock_api_key".to_string(),
             },
         )
@@ -882,7 +888,7 @@ mod tests {
         let response = prove(
             Json(proof_request),
             Config {
-                data_layer_url: "http://127.0.0.1:9999".to_string(),
+                data_layer_url: "http://127.0.0.1:9998".to_string(), // Updated to use new data layer port
                 data_layer_api_key: "mock_api_key".to_string(),
             },
         )
