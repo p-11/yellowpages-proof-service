@@ -296,7 +296,7 @@ async fn prove(Json(proof_request): Json<ProofRequest>, config: Config) -> Statu
 
     // Success path
     println!("All verifications completed successfully");
-    StatusCode::OK
+    StatusCode::NO_CONTENT
 }
 
 fn validate_inputs(
@@ -941,7 +941,7 @@ mod tests {
             },
         )
         .await;
-        assert_eq!(response, StatusCode::OK);
+        assert_eq!(response, StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
