@@ -15,6 +15,11 @@ RUN cargo build --release
 
 # --- Runtime Stage ---
 FROM debian:bookworm-slim
+
+# Expose VERSION to the container’s env
+ARG VERSION
+ENV VERSION=${VERSION}
+
 WORKDIR /app
 
 # Copy the built binary

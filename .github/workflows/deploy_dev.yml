@@ -76,6 +76,7 @@ jobs:
           EV_APP_UUID: ${{ env.EV_APP_UUID }}
           EV_ENCLAVE_SIGNING_CERT: ${{ env.EV_ENCLAVE_SIGNING_CERT }}
           EV_ENCLAVE_SIGNING_KEY: ${{ env.EV_ENCLAVE_SIGNING_KEY }}
+          VERSION: ${{ env.VERSION }}
         run: |
           # fail fast if any part of the pipe errors
           set -eo pipefail
@@ -86,6 +87,7 @@ jobs:
           echo "$EV_ENCLAVE_SIGNING_KEY"  > key.pem
           # deploy and emit a compact pcr.json
           ev enclave deploy -v \
+            --build-arg VERSION=${{ env.VERSION }} \
             | tee raw.json \
             | jq -c \
                 --arg version ${{ env.VERSION }} \
