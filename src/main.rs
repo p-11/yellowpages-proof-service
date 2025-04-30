@@ -147,6 +147,7 @@ struct CreateProofRequest {
 struct Config {
     data_layer_url: String,
     data_layer_api_key: String,
+    version: String,
 }
 
 impl Config {
@@ -156,6 +157,7 @@ impl Config {
                 .map_err(|_| "YP_DS_API_URL environment variable not set")?,
             data_layer_api_key: env::var("YP_DS_API_KEY")
                 .map_err(|_| "YP_DS_API_KEY environment variable not set")?,
+            version: env::var("VERSION").map_err(|_| "VERSION environment variable not set")?,
         })
     }
 }
@@ -171,7 +173,7 @@ async fn upload_to_data_layer(
     let request = CreateProofRequest {
         btc_address: bitcoin_address.to_string(),
         ml_dsa_44_address: ml_dsa_address.to_string(),
-        version: "1.1.0".to_string(),
+        version: config.version.clone(),
         proof: attestation_doc_base64.to_string(),
     };
 
@@ -599,6 +601,7 @@ mod tests {
     fn mock_data_layer_handler(
         expected_bitcoin_address: &str,
         expected_ml_dsa_address: &str,
+        expected_version: &str,
         request: (axum::http::HeaderMap, Json<CreateProofRequest>),
     ) -> impl IntoResponse {
         let (headers, Json(request)) = request;
@@ -616,7 +619,7 @@ mod tests {
         if request.ml_dsa_44_address != expected_ml_dsa_address {
             return (StatusCode::BAD_REQUEST, "Invalid ML-DSA address").into_response();
         }
-        if request.version != "1.1.0" {
+        if request.version != expected_version {
             return (StatusCode::BAD_REQUEST, "Invalid version").into_response();
         }
         if request.proof.is_empty() {
@@ -815,6 +818,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_end_to_end() {
+        const TEST_VERSION: &str = "1.1.0";
+
         // Start mock attestation server
         let mock_attestation_app = Router::new().route(
             "/attestation-doc",
@@ -827,11 +832,15 @@ mod tests {
         let mock_data_layer_app = Router::new().route(
             "/v1/proofs",
             post(|req| async move {
-                mock_data_layer_handler(VALID_BITCOIN_ADDRESS, VALID_ML_DSA_ADDRESS, req)
+                mock_data_layer_handler(
+                    VALID_BITCOIN_ADDRESS,
+                    VALID_ML_DSA_ADDRESS,
+                    TEST_VERSION,
+                    req,
+                )
             }),
         );
 
-        // Bind servers to different ports
         let mock_attestation_listener = tokio::net::TcpListener::bind("127.0.0.1:9999")
             .await
             .unwrap();
@@ -866,8 +875,9 @@ mod tests {
         let response = prove(
             Json(proof_request),
             Config {
-                data_layer_url: "http://127.0.0.1:9998".to_string(), // Updated to use new data layer port
+                data_layer_url: "http://127.0.0.1:9998".to_string(),
                 data_layer_api_key: "mock_api_key".to_string(),
+                version: TEST_VERSION.to_string(),
             },
         )
         .await;
@@ -888,8 +898,9 @@ mod tests {
         let response = prove(
             Json(proof_request),
             Config {
-                data_layer_url: "http://127.0.0.1:9998".to_string(), // Updated to use new data layer port
+                data_layer_url: "http://127.0.0.1:9998".to_string(),
                 data_layer_api_key: "mock_api_key".to_string(),
+                version: "1.1.0".to_string(),
             },
         )
         .await;
