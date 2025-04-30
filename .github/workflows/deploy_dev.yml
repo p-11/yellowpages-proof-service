@@ -107,12 +107,13 @@ jobs:
           # fail fast if any part of the pipe errors
           set -eo pipefail
           echo "Sending PCR JSON to data service…"
-          # fail on 4xx/5xx, show errors
-          curl --fail \
+          # -sS: silent but show errors; -f: fail on HTTP 4xx/5xx
+          curl -sS -f \
             -X POST "${{ env.YP_DS_API_URL }}" \
             -H "x-api-key: ${{ env.YP_DS_API_KEY }}" \
             -H "Content-Type: application/json" \
-            --data @pcrs.json
+            --data @pcrs.json \
+            > /dev/null
           echo "Uploaded to the YP Data Service"
 
       - name: Output PCRs & version in GitHub Step Summary
