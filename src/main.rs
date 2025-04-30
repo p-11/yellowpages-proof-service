@@ -41,6 +41,14 @@ struct ProofRequest {
     ml_dsa_public_key: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct UploadProofRequest {
+    btc_address: String,
+    ml_dsa_44_address: String,
+    version: String,
+    proof: String,
+}
+
 #[derive(Debug)]
 struct MlDsaAddress {
     public_key_hash: [u8; 32],
@@ -135,14 +143,6 @@ macro_rules! ok_or_internal_error {
     };
 }
 
-#[derive(Serialize, Deserialize)]
-struct CreateProofRequest {
-    btc_address: String,
-    ml_dsa_44_address: String,
-    version: String,
-    proof: String,
-}
-
 #[derive(Clone)]
 struct Config {
     data_layer_url: String,
@@ -207,44 +207,6 @@ impl Config {
             version,
         })
     }
-}
-
-async fn upload_to_data_layer(
-    bitcoin_address: &BitcoinAddress,
-    ml_dsa_address: &MlDsaAddress,
-    attestation_doc_base64: &str,
-    config: &Config,
-) -> Result<(), StatusCode> {
-    let client = Client::new();
-
-    let request = CreateProofRequest {
-        btc_address: bitcoin_address.to_string(),
-        ml_dsa_44_address: ml_dsa_address.to_string(),
-        version: config.version.clone(),
-        proof: attestation_doc_base64.to_string(),
-    };
-
-    // Send request to data layer
-    let response = ok_or_internal_error!(
-        client
-            .post(format!("{}/v1/proofs", config.data_layer_url))
-            .header("x-api-key", &config.data_layer_api_key)
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await,
-        "Failed to send request to data layer"
-    );
-
-    // Check if the request was successful
-    if !response.status().is_success() {
-        internal_error!(
-            "Data layer returned non-success status: {}",
-            response.status()
-        );
-    }
-
-    Ok(())
 }
 
 #[tokio::main]
@@ -606,6 +568,44 @@ async fn embed_addresses_in_proof(
     Ok(general_purpose::STANDARD.encode(attestation_bytes))
 }
 
+async fn upload_to_data_layer(
+    bitcoin_address: &BitcoinAddress,
+    ml_dsa_address: &MlDsaAddress,
+    attestation_doc_base64: &str,
+    config: &Config,
+) -> Result<(), StatusCode> {
+    let client = Client::new();
+
+    let request = UploadProofRequest {
+        btc_address: bitcoin_address.to_string(),
+        ml_dsa_44_address: ml_dsa_address.to_string(),
+        version: config.version.clone(),
+        proof: attestation_doc_base64.to_string(),
+    };
+
+    // Send request to data layer
+    let response = ok_or_internal_error!(
+        client
+            .post(format!("{}/v1/proofs", config.data_layer_url))
+            .header("x-api-key", &config.data_layer_api_key)
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await,
+        "Failed to send request to data layer"
+    );
+
+    // Check if the request was successful
+    if !response.status().is_success() {
+        internal_error!(
+            "Data layer returned non-success status: {}",
+            response.status()
+        );
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -649,7 +649,7 @@ mod tests {
         expected_bitcoin_address: &str,
         expected_ml_dsa_address: &str,
         expected_version: &str,
-        request: (axum::http::HeaderMap, Json<CreateProofRequest>),
+        request: (axum::http::HeaderMap, Json<UploadProofRequest>),
     ) -> impl IntoResponse {
         let (headers, Json(request)) = request;
 
