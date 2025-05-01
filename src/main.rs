@@ -335,12 +335,17 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
         "Address is not for Bitcoin mainnet"
     );
 
-    // Validate the address is P2PKH
-    if !matches!(bitcoin_address.address_type(), Some(AddressType::P2pkh)) {
-        bad_request!(
-            "Invalid address type: {:?}, only P2PKH is supported",
-            bitcoin_address.address_type()
-        );
+    // Validate the address type is either P2PKH or P2WPKH
+    match bitcoin_address.address_type() {
+        Some(AddressType::P2pkh) | Some(AddressType::P2wpkh) => {
+            println!("Valid address type: {:?}", bitcoin_address.address_type());
+        }
+        other_type => {
+            bad_request!(
+                "Invalid address type: {:?}, only P2PKH and P2WPKH are supported",
+                other_type
+            );
+        }
     }
 
     println!("Successfully parsed Bitcoin address: {bitcoin_address}");
@@ -442,7 +447,7 @@ fn verify_bitcoin_ownership(
 
     // Step 4: Verify that the recovered public key matches the address
     match address.address_type() {
-        Some(AddressType::P2pkh) => {
+        Some(AddressType::P2pkh) | Some(AddressType::P2wpkh) => {
             // Check if the address is related to the recovered public key
             if address.is_related_to_pubkey(&recovered_public_key) {
                 println!("Address ownership verified: recovered public key matches the address");
@@ -454,7 +459,7 @@ fn verify_bitcoin_ownership(
         }
         other_type => {
             bad_request!(
-                "Invalid address type: {:?}, only P2PKH is supported",
+                "Invalid address type: {:?}, only P2PKH and P2WPKH are supported",
                 other_type
             );
         }
@@ -592,6 +597,9 @@ mod tests {
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
+    const P2WPKH_ADDRESS: &str = "bc1qqylnmgkvfa7t68e7a7m3ms2cs9xu6kxtzemdre";
+    const P2WPKH_SIGNATURE: &str =
+        "H079G3RGX1L4T7+4XN5lB+vMmrP1Pfxf2ExVFDWB042JXS0E9gu+te+1sYDsthUlc6yv0V8O3ctr9i19tCfkjjk=";
 
     // Mock handler for attestation requests
     fn mock_attestation_handler(
@@ -670,7 +678,8 @@ mod tests {
         "IE1Eu4G/OO+hPFd//epm6mNy6EXoYmzY2k9Dw4mdDRkjL9wYE7GPFcFN6U38tpsBUXZlNVBZRSeLrbjrgZnkJ1I="; // Signature for "hello world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS`
     const INVALID_SIGNATURE: &str =
         "IHHwE2wSfJU3Ej5CQA0c8YZIBBl9/knLNfwzOxFMQ3fqZNStxzkma0Jwko+T7JMAGIQqP5d9J2PcQuToq5QZAhk="; // Signature for "goodbye world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS`
-    const NON_P2PKH_ADDRESS: &str = "bc1quylm4dkc4kn8grnnwgzhark2uv704pmkjz4vpp"; // non-P2PKH address
+    const NON_P2PKH_ADDRESS: &str =
+        "bc1pxwww0ct9ue7e8tdnlmug5m2tamfn7q06sahstg39ys4c9f3340qqxrdu9k"; // Taproot address
     const INVALID_ADDRESS: &str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7Divf"; // Malformed address
 
     // ML-DSA test data
@@ -846,6 +855,47 @@ mod tests {
         assert!(
             result.is_err(),
             "Validation should fail with invalid ML-DSA address"
+        );
+    }
+
+    #[test]
+    fn test_validate_p2wpkh_address() {
+        let proof_request = ProofRequest {
+            bitcoin_address: P2WPKH_ADDRESS.to_string(),
+            bitcoin_signed_message: P2WPKH_SIGNATURE.to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
+        };
+
+        let result = validate_inputs(&proof_request);
+        println!("P2WPKH validation result: {:?}", result);
+
+        // We now expect this to succeed since we support P2WPKH
+        assert!(
+            result.is_ok(),
+            "Validation should succeed with P2WPKH address"
+        );
+    }
+
+    #[test]
+    fn test_verify_bitcoin_ownership_p2wpkh() {
+        // First validate the inputs to get the parsed address and signature
+        let proof_request = ProofRequest {
+            bitcoin_address: P2WPKH_ADDRESS.to_string(),
+            bitcoin_signed_message: P2WPKH_SIGNATURE.to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
+        };
+
+        let (address, signature, _, _, _) = validate_inputs(&proof_request).unwrap();
+
+        // Verify ownership
+        let result = verify_bitcoin_ownership(&address, &signature);
+        assert!(
+            result.is_ok(),
+            "Bitcoin ownership verification should succeed with valid P2WPKH signature"
         );
     }
 
