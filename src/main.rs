@@ -1217,4 +1217,32 @@ mod tests {
         .await;
         assert_eq!(response, StatusCode::BAD_REQUEST);
     }
+
+    #[test]
+    fn test_verify_ml_dsa_hardcoded_signature() {
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
+        };
+
+        let (bitcoin_address, _, ml_dsa_address, ml_dsa_public_key, ml_dsa_signed_message) =
+            validate_inputs(&proof_request).unwrap();
+
+        let expected_message = generate_expected_message(&bitcoin_address, &ml_dsa_address);
+
+        let result = verify_ml_dsa_ownership(
+            &ml_dsa_address,
+            &ml_dsa_public_key,
+            &ml_dsa_signed_message,
+            &expected_message,
+        );
+
+        assert!(
+            result.is_ok(),
+            "ML-DSA verification should succeed with hardcoded signature"
+        );
+    }
 }
