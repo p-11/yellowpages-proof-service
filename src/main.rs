@@ -594,6 +594,7 @@ mod tests {
     use super::*;
     use axum::{response::IntoResponse, routing::post};
     use ml_dsa::{KeyGen, signature::Signer};
+    use serial_test::serial;
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
@@ -895,6 +896,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_end_to_end() {
         const TEST_VERSION: &str = "1.1.0";
 
@@ -960,10 +962,7 @@ mod tests {
         ))
         .await;
         assert_eq!(response, StatusCode::NO_CONTENT);
-    }
-
-    #[tokio::test]
-    async fn test_end_to_end_failure() {
+        // test that invalid address fails
         let proof_request = ProofRequest {
             bitcoin_address: INVALID_ADDRESS.to_string(),
             bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
@@ -1146,5 +1145,74 @@ mod tests {
 
         // Invalid case - empty string
         assert!(Config::sanity_check_api_key("").is_err());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_p2wpkh() {
+        const TEST_VERSION: &str = "1.1.0";
+
+        // Start mock attestation server
+        let mock_attestation_app = Router::new().route(
+            "/attestation-doc",
+            post(|req| async move {
+                mock_attestation_handler(VALID_BITCOIN_ADDRESS_P2WPKH, VALID_ML_DSA_ADDRESS, req)
+            }),
+        );
+
+        // Start mock data layer server
+        let mock_data_layer_app = Router::new().route(
+            "/v1/proofs",
+            post(|req| async move {
+                mock_data_layer_handler(
+                    VALID_BITCOIN_ADDRESS_P2WPKH,
+                    VALID_ML_DSA_ADDRESS,
+                    TEST_VERSION,
+                    req,
+                )
+            }),
+        );
+
+        let mock_attestation_listener = tokio::net::TcpListener::bind("127.0.0.1:9999")
+            .await
+            .unwrap();
+        let mock_data_layer_listener = tokio::net::TcpListener::bind("127.0.0.1:9998")
+            .await
+            .unwrap();
+
+        // Spawn both servers to run concurrently
+        tokio::spawn(async move {
+            axum::serve(mock_attestation_listener, mock_attestation_app)
+                .await
+                .unwrap();
+        });
+        tokio::spawn(async move {
+            axum::serve(mock_data_layer_listener, mock_data_layer_app)
+                .await
+                .unwrap();
+        });
+
+        // Give the servers a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2WPKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH.to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
+        };
+
+        // Call the main function with the request
+        let response = Box::pin(prove(
+            Json(proof_request),
+            Config {
+                data_layer_url: "http://127.0.0.1:9998".to_string(),
+                data_layer_api_key: "mock_api_key".to_string(),
+                version: TEST_VERSION.to_string(),
+            },
+        ))
+        .await;
+        assert_eq!(response, StatusCode::NO_CONTENT);
     }
 }
