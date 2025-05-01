@@ -603,7 +603,7 @@ mod tests {
     #[allow(clippy::needless_pass_by_value)]
     fn mock_attestation_handler(
         expected_bitcoin_address: String,
-        expected_ml_dsa_address: &str,
+        expected_ml_dsa_address: String,
         Json(request): Json<AttestationRequest>,
     ) -> impl IntoResponse {
         // Decode and verify the challenge
@@ -636,7 +636,7 @@ mod tests {
     #[allow(clippy::needless_pass_by_value)]
     fn mock_data_layer_handler(
         expected_bitcoin_address: String,
-        expected_ml_dsa_address: &str,
+        expected_ml_dsa_address: String,
         expected_version: &str,
         request: (axum::http::HeaderMap, Json<UploadProofRequest>),
     ) -> impl IntoResponse {
@@ -1070,27 +1070,27 @@ mod tests {
         const TEST_VERSION: &str = "1.1.0";
 
         let bitcoin_address = bitcoin_address.to_string();
-        let mock_attestation_app = Router::new().route(
-            "/attestation-doc",
-            post({
-                let bitcoin_address = bitcoin_address.clone();
-                move |req| async move {
-                    mock_attestation_handler(bitcoin_address, VALID_ML_DSA_ADDRESS, req)
-                }
-            }),
-        );
+        let ml_dsa_address = ml_dsa_address.to_string();
+
+        let mock_attestation_app =
+            Router::new().route(
+                "/attestation-doc",
+                post({
+                    let bitcoin_address = bitcoin_address.clone();
+                    let ml_dsa_address = ml_dsa_address.clone();
+                    move |req| async move {
+                        mock_attestation_handler(bitcoin_address, ml_dsa_address, req)
+                    }
+                }),
+            );
 
         let mock_data_layer_app = Router::new().route(
             "/v1/proofs",
             post({
                 let bitcoin_address = bitcoin_address.clone();
+                let ml_dsa_address = ml_dsa_address.clone();
                 move |req| async move {
-                    mock_data_layer_handler(
-                        bitcoin_address,
-                        VALID_ML_DSA_ADDRESS,
-                        TEST_VERSION,
-                        req,
-                    )
+                    mock_data_layer_handler(bitcoin_address, ml_dsa_address, TEST_VERSION, req)
                 }
             }),
         );
