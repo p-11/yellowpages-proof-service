@@ -337,7 +337,7 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
 
     // Validate the address type is either P2PKH or P2WPKH
     match bitcoin_address.address_type() {
-        Some(AddressType::P2pkh) | Some(AddressType::P2wpkh) => {
+        Some(AddressType::P2pkh | AddressType::P2wpkh) => {
             println!("Valid address type: {:?}", bitcoin_address.address_type());
         }
         other_type => {
@@ -447,7 +447,7 @@ fn verify_bitcoin_ownership(
 
     // Step 4: Verify that the recovered public key matches the address
     match address.address_type() {
-        Some(AddressType::P2pkh) | Some(AddressType::P2wpkh) => {
+        Some(AddressType::P2pkh | AddressType::P2wpkh) => {
             // Check if the address is related to the recovered public key
             if address.is_related_to_pubkey(&recovered_public_key) {
                 println!("Address ownership verified: recovered public key matches the address");
@@ -865,9 +865,8 @@ mod tests {
         };
 
         let result = validate_inputs(&proof_request);
-        println!("P2WPKH validation result: {:?}", result);
+        println!("P2WPKH validation result: {result:?}");
 
-        // We now expect this to succeed since we support P2WPKH
         assert!(
             result.is_ok(),
             "Validation should succeed with P2WPKH address"
