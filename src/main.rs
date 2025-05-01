@@ -335,12 +335,17 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
         "Address is not for Bitcoin mainnet"
     );
 
-    // Validate the address is P2PKH
-    if !matches!(bitcoin_address.address_type(), Some(AddressType::P2pkh)) {
-        bad_request!(
-            "Invalid address type: {:?}, only P2PKH is supported",
-            bitcoin_address.address_type()
-        );
+    // Validate the address type is either P2PKH or P2WPKH
+    match bitcoin_address.address_type() {
+        Some(AddressType::P2pkh | AddressType::P2wpkh) => {
+            println!("Valid address type: {:?}", bitcoin_address.address_type());
+        }
+        other_type => {
+            bad_request!(
+                "Invalid address type: {:?}, only P2PKH and P2WPKH are supported",
+                other_type
+            );
+        }
     }
 
     println!("Successfully parsed Bitcoin address: {bitcoin_address}");
@@ -442,7 +447,7 @@ fn verify_bitcoin_ownership(
 
     // Step 4: Verify that the recovered public key matches the address
     match address.address_type() {
-        Some(AddressType::P2pkh) => {
+        Some(AddressType::P2pkh | AddressType::P2wpkh) => {
             // Check if the address is related to the recovered public key
             if address.is_related_to_pubkey(&recovered_public_key) {
                 println!("Address ownership verified: recovered public key matches the address");
@@ -454,7 +459,7 @@ fn verify_bitcoin_ownership(
         }
         other_type => {
             bad_request!(
-                "Invalid address type: {:?}, only P2PKH is supported",
+                "Invalid address type: {:?}, only P2PKH and P2WPKH are supported",
                 other_type
             );
         }
@@ -589,14 +594,16 @@ mod tests {
     use super::*;
     use axum::{response::IntoResponse, routing::post};
     use ml_dsa::{KeyGen, signature::Signer};
+    use serial_test::serial;
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
 
     // Mock handler for attestation requests
+    #[allow(clippy::needless_pass_by_value)]
     fn mock_attestation_handler(
-        expected_bitcoin_address: &str,
-        expected_ml_dsa_address: &str,
+        expected_bitcoin_address: String,
+        expected_ml_dsa_address: String,
         Json(request): Json<AttestationRequest>,
     ) -> impl IntoResponse {
         // Decode and verify the challenge
@@ -626,9 +633,10 @@ mod tests {
     }
 
     // Mock handler for data layer requests
+    #[allow(clippy::needless_pass_by_value)]
     fn mock_data_layer_handler(
-        expected_bitcoin_address: &str,
-        expected_ml_dsa_address: &str,
+        expected_bitcoin_address: String,
+        expected_ml_dsa_address: String,
         expected_version: &str,
         request: (axum::http::HeaderMap, Json<UploadProofRequest>),
     ) -> impl IntoResponse {
@@ -665,12 +673,15 @@ mod tests {
     }
 
     // Constants for test data
-    const VALID_BITCOIN_ADDRESS: &str = "1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm"; // P2PKH address
-    const VALID_SIGNATURE: &str =
-        "IE1Eu4G/OO+hPFd//epm6mNy6EXoYmzY2k9Dw4mdDRkjL9wYE7GPFcFN6U38tpsBUXZlNVBZRSeLrbjrgZnkJ1I="; // Signature for "hello world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS`
+    const VALID_BITCOIN_ADDRESS_P2PKH: &str = "1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm"; // P2PKH address
+    const VALID_BITCOIN_SIGNED_MESSAGE_P2PKH: &str =
+        "IE1Eu4G/OO+hPFd//epm6mNy6EXoYmzY2k9Dw4mdDRkjL9wYE7GPFcFN6U38tpsBUXZlNVBZRSeLrbjrgZnkJ1I="; // Signature for "hello world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS_P2PKH`
+    const VALID_BITCOIN_ADDRESS_P2WPKH: &str = "bc1qqylnmgkvfa7t68e7a7m3ms2cs9xu6kxtzemdre"; // P2WPKH address (Segwit)
+    const VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH: &str =
+        "H079G3RGX1L4T7+4XN5lB+vMmrP1Pfxf2ExVFDWB042JXS0E9gu+te+1sYDsthUlc6yv0V8O3ctr9i19tCfkjjk="; // Signature for "hello world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS_P2WPKH`
     const INVALID_SIGNATURE: &str =
-        "IHHwE2wSfJU3Ej5CQA0c8YZIBBl9/knLNfwzOxFMQ3fqZNStxzkma0Jwko+T7JMAGIQqP5d9J2PcQuToq5QZAhk="; // Signature for "goodbye world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS`
-    const NON_P2PKH_ADDRESS: &str = "bc1quylm4dkc4kn8grnnwgzhark2uv704pmkjz4vpp"; // non-P2PKH address
+        "IHHwE2wSfJU3Ej5CQA0c8YZIBBl9/knLNfwzOxFMQ3fqZNStxzkma0Jwko+T7JMAGIQqP5d9J2PcQuToq5QZAhk="; // Signature for "goodbye world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS_P2PKH`
+    const P2TR_ADDRESS: &str = "bc1pxwww0ct9ue7e8tdnlmug5m2tamfn7q06sahstg39ys4c9f3340qqxrdu9k"; // Taproot address
     const INVALID_ADDRESS: &str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7Divf"; // Malformed address
 
     // ML-DSA test data
@@ -682,8 +693,8 @@ mod tests {
     #[test]
     fn test_validate_inputs_valid_data() {
         let proof_request = ProofRequest {
-            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
-            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
             ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
             ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
@@ -697,7 +708,7 @@ mod tests {
     fn test_validate_inputs_empty_address() {
         let proof_request = ProofRequest {
             bitcoin_address: String::new(),
-            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
             ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
             ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
@@ -711,7 +722,7 @@ mod tests {
     fn test_validate_inputs_invalid_address() {
         let proof_request = ProofRequest {
             bitcoin_address: INVALID_ADDRESS.to_string(),
-            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
             ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
             ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
@@ -725,26 +736,23 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_inputs_non_p2pkh_address() {
+    fn test_validate_inputs_p2tr_address() {
         let proof_request = ProofRequest {
-            bitcoin_address: NON_P2PKH_ADDRESS.to_string(),
-            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            bitcoin_address: P2TR_ADDRESS.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
             ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
             ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
         let result = validate_inputs(&proof_request);
-        assert!(
-            result.is_err(),
-            "Validation should fail with non-P2PKH address"
-        );
+        assert!(result.is_err(), "Validation should fail with p2tr address");
     }
 
     #[test]
     fn test_validate_inputs_short_signature() {
         let proof_request = ProofRequest {
-            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             bitcoin_signed_message: "TooShort".to_string(),
             ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
             ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
@@ -761,7 +769,7 @@ mod tests {
     #[test]
     fn test_validate_inputs_long_signature() {
         let proof_request = ProofRequest {
-            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             bitcoin_signed_message: "a".repeat(150), // Very long signature
             ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
             ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
@@ -778,7 +786,7 @@ mod tests {
     #[test]
     fn test_validate_inputs_invalid_base64() {
         let proof_request = ProofRequest {
-            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             bitcoin_signed_message: "!!!Invalid@Base64***".repeat(5) + "MoreInvalidChars!@#$%^&*()", // Not valid base64 but long enough
             ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
             ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
@@ -793,10 +801,10 @@ mod tests {
     }
 
     #[test]
-    fn test_verification_succeeds() {
+    fn test_verification_succeeds_p2pkh() {
         let proof_request = ProofRequest {
-            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
-            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
             ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
             ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
@@ -814,7 +822,7 @@ mod tests {
     #[test]
     fn test_verification_fails_wrong_message() {
         let proof_request = ProofRequest {
-            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             bitcoin_signed_message: INVALID_SIGNATURE.to_string(), // Signature for different message
             ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
             ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
@@ -835,8 +843,8 @@ mod tests {
     #[test]
     fn test_validate_inputs_invalid_ml_dsa_address() {
         let proof_request = ProofRequest {
-            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
-            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
             ml_dsa_address: INVALID_ML_DSA_ADDRESS.to_string(),
             ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
@@ -849,95 +857,44 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_end_to_end() {
-        const TEST_VERSION: &str = "1.1.0";
-
-        // Start mock attestation server
-        let mock_attestation_app = Router::new().route(
-            "/attestation-doc",
-            post(|req| async move {
-                mock_attestation_handler(VALID_BITCOIN_ADDRESS, VALID_ML_DSA_ADDRESS, req)
-            }),
-        );
-
-        // Start mock data layer server
-        let mock_data_layer_app = Router::new().route(
-            "/v1/proofs",
-            post(|req| async move {
-                mock_data_layer_handler(
-                    VALID_BITCOIN_ADDRESS,
-                    VALID_ML_DSA_ADDRESS,
-                    TEST_VERSION,
-                    req,
-                )
-            }),
-        );
-
-        let mock_attestation_listener = tokio::net::TcpListener::bind("127.0.0.1:9999")
-            .await
-            .unwrap();
-        let mock_data_layer_listener = tokio::net::TcpListener::bind("127.0.0.1:9998")
-            .await
-            .unwrap();
-
-        // Spawn both servers to run concurrently
-        tokio::spawn(async move {
-            axum::serve(mock_attestation_listener, mock_attestation_app)
-                .await
-                .unwrap();
-        });
-        tokio::spawn(async move {
-            axum::serve(mock_data_layer_listener, mock_data_layer_app)
-                .await
-                .unwrap();
-        });
-
-        // Give the servers a moment to start
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
+    #[test]
+    fn test_validate_p2wpkh_address() {
         let proof_request = ProofRequest {
-            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
-            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2WPKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH.to_string(),
             ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
             ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        // Call the main function with the request
-        let response = Box::pin(prove(
-            Json(proof_request),
-            Config {
-                data_layer_url: "http://127.0.0.1:9998".to_string(),
-                data_layer_api_key: "mock_api_key".to_string(),
-                version: TEST_VERSION.to_string(),
-            },
-        ))
-        .await;
-        assert_eq!(response, StatusCode::NO_CONTENT);
+        let result = validate_inputs(&proof_request);
+        println!("P2WPKH validation result: {result:?}");
+
+        assert!(
+            result.is_ok(),
+            "Validation should succeed with P2WPKH address"
+        );
     }
 
-    #[tokio::test]
-    async fn test_end_to_end_failure() {
+    #[test]
+    fn test_verify_bitcoin_ownership_p2wpkh() {
+        // First validate the inputs to get the parsed address and signature
         let proof_request = ProofRequest {
-            bitcoin_address: INVALID_ADDRESS.to_string(),
-            bitcoin_signed_message: VALID_SIGNATURE.to_string(),
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2WPKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH.to_string(),
             ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
             ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        // This should fail during validation with a BAD_REQUEST
-        let response = Box::pin(prove(
-            Json(proof_request),
-            Config {
-                data_layer_url: "http://127.0.0.1:9998".to_string(),
-                data_layer_api_key: "mock_api_key".to_string(),
-                version: "1.1.0".to_string(),
-            },
-        ))
-        .await;
-        assert_eq!(response, StatusCode::BAD_REQUEST);
+        let (address, signature, _, _, _) = validate_inputs(&proof_request).unwrap();
+
+        // Verify ownership
+        let result = verify_bitcoin_ownership(&address, &signature);
+        assert!(
+            result.is_ok(),
+            "Bitcoin ownership verification should succeed with valid P2WPKH signature"
+        );
     }
 
     #[test]
@@ -1053,7 +1010,7 @@ mod tests {
     fn test_user_data_encoding() {
         // Create and encode user data
         let user_data = UserData {
-            bitcoin_address: VALID_BITCOIN_ADDRESS.to_string(),
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_ADDRESS.to_string(),
         };
 
@@ -1066,7 +1023,7 @@ mod tests {
         let decoded_data: UserData = serde_json::from_str(&decoded_json).unwrap();
 
         // Verify the values match
-        assert_eq!(decoded_data.bitcoin_address, VALID_BITCOIN_ADDRESS);
+        assert_eq!(decoded_data.bitcoin_address, VALID_BITCOIN_ADDRESS_P2PKH);
         assert_eq!(decoded_data.ml_dsa_44_address, VALID_ML_DSA_ADDRESS);
     }
 
@@ -1101,5 +1058,124 @@ mod tests {
 
         // Invalid case - empty string
         assert!(Config::sanity_check_api_key("").is_err());
+    }
+
+    async fn run_end_to_end_test(
+        bitcoin_address: &str,
+        bitcoin_signed_message: &str,
+        ml_dsa_signed_message: &str,
+        ml_dsa_address: &str,
+        ml_dsa_public_key: &str,
+    ) -> StatusCode {
+        const TEST_VERSION: &str = "1.1.0";
+
+        let bitcoin_address = bitcoin_address.to_string();
+        let ml_dsa_address = ml_dsa_address.to_string();
+
+        let mock_attestation_app =
+            Router::new().route(
+                "/attestation-doc",
+                post({
+                    let bitcoin_address = bitcoin_address.clone();
+                    let ml_dsa_address = ml_dsa_address.clone();
+                    move |req| async move {
+                        mock_attestation_handler(bitcoin_address, ml_dsa_address, req)
+                    }
+                }),
+            );
+
+        let mock_data_layer_app = Router::new().route(
+            "/v1/proofs",
+            post({
+                let bitcoin_address = bitcoin_address.clone();
+                let ml_dsa_address = ml_dsa_address.clone();
+                move |req| async move {
+                    mock_data_layer_handler(bitcoin_address, ml_dsa_address, TEST_VERSION, req)
+                }
+            }),
+        );
+
+        let mock_attestation_listener = tokio::net::TcpListener::bind("127.0.0.1:9999")
+            .await
+            .unwrap();
+        let mock_data_layer_listener = tokio::net::TcpListener::bind("127.0.0.1:9998")
+            .await
+            .unwrap();
+
+        // Spawn both servers to run concurrently
+        tokio::spawn(async move {
+            axum::serve(mock_attestation_listener, mock_attestation_app)
+                .await
+                .unwrap();
+        });
+        tokio::spawn(async move {
+            axum::serve(mock_data_layer_listener, mock_data_layer_app)
+                .await
+                .unwrap();
+        });
+
+        // Give the servers a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let proof_request = ProofRequest {
+            bitcoin_address: bitcoin_address.to_string(),
+            bitcoin_signed_message: bitcoin_signed_message.to_string(),
+            ml_dsa_signed_message: ml_dsa_signed_message.to_string(),
+            ml_dsa_address: ml_dsa_address.to_string(),
+            ml_dsa_public_key: ml_dsa_public_key.to_string(),
+        };
+
+        // Call the main function with the request
+        Box::pin(prove(
+            Json(proof_request),
+            Config {
+                data_layer_url: "http://127.0.0.1:9998".to_string(),
+                data_layer_api_key: "mock_api_key".to_string(),
+                version: TEST_VERSION.to_string(),
+            },
+        ))
+        .await
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_p2pkh() {
+        let response = run_end_to_end_test(
+            VALID_BITCOIN_ADDRESS_P2PKH,
+            VALID_BITCOIN_SIGNED_MESSAGE_P2PKH,
+            VALID_ML_DSA_SIGNATURE,
+            VALID_ML_DSA_ADDRESS,
+            VALID_ML_DSA_PUBLIC_KEY,
+        )
+        .await;
+        assert_eq!(response, StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_p2wpkh() {
+        let response = run_end_to_end_test(
+            VALID_BITCOIN_ADDRESS_P2WPKH,
+            VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH,
+            VALID_ML_DSA_SIGNATURE,
+            VALID_ML_DSA_ADDRESS,
+            VALID_ML_DSA_PUBLIC_KEY,
+        )
+        .await;
+        assert_eq!(response, StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_invalid_address() {
+        let response = run_end_to_end_test(
+            INVALID_ADDRESS,
+            VALID_BITCOIN_SIGNED_MESSAGE_P2PKH,
+            VALID_ML_DSA_SIGNATURE,
+            VALID_ML_DSA_ADDRESS,
+            VALID_ML_DSA_PUBLIC_KEY,
+        )
+        .await;
+        assert_eq!(response, StatusCode::BAD_REQUEST);
     }
 }
