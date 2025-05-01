@@ -600,6 +600,7 @@ mod tests {
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
 
     // Mock handler for attestation requests
+    #[allow(clippy::needless_pass_by_value)]
     fn mock_attestation_handler(
         expected_bitcoin_address: String,
         expected_ml_dsa_address: &str,
@@ -632,6 +633,7 @@ mod tests {
     }
 
     // Mock handler for data layer requests
+    #[allow(clippy::needless_pass_by_value)]
     fn mock_data_layer_handler(
         expected_bitcoin_address: String,
         expected_ml_dsa_address: &str,
