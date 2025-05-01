@@ -248,15 +248,26 @@ async fn prove(Json(proof_request): Json<ProofRequest>, config: Config) -> Statu
         Err(status) => return status,
     };
 
+    // Re-create the message that both parties should have signed
+    let expected_message = format!(
+        "I want to permanently link my Bitcoin address {} with my post-quantum address {}",
+        bitcoin_address, ml_dsa_address
+    );
+
     // Step 2: Verify Bitcoin ownership
-    if let Err(status) = verify_bitcoin_ownership(&bitcoin_address, &bitcoin_signed_message) {
+    if let Err(status) =
+        verify_bitcoin_ownership(&bitcoin_address, &bitcoin_signed_message, &expected_message)
+    {
         return status;
     }
 
     // Step 3: Verify ML-DSA ownership
-    if let Err(status) =
-        verify_ml_dsa_ownership(&ml_dsa_address, &ml_dsa_public_key, &ml_dsa_signed_message)
-    {
+    if let Err(status) = verify_ml_dsa_ownership(
+        &ml_dsa_address,
+        &ml_dsa_public_key,
+        &ml_dsa_signed_message,
+        &expected_message,
+    ) {
         return status;
     }
 
@@ -411,13 +422,12 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
 fn verify_bitcoin_ownership(
     address: &BitcoinAddress,
     signature: &BitcoinMessageSignature,
+    expected_message: &str,
 ) -> Result<(), StatusCode> {
     // Initialize secp256k1 context
     let secp = Secp256k1::verification_only();
 
-    // Step 1: Create the message hash for "hello world"
-    let message = "hello world";
-    let msg_hash = signed_msg_hash(message);
+    let msg_hash = signed_msg_hash(expected_message);
 
     // Step 2: Recover the public key from the signature
     let recovered_public_key = ok_or_bad_request!(
@@ -473,14 +483,11 @@ fn verify_ml_dsa_ownership(
     address: &MlDsaAddress,
     verifying_key: &MlDsaVerifyingKey<MlDsa44>,
     signature: &MlDsaSignature<MlDsa44>,
+    expected_message: &str,
 ) -> Result<(), StatusCode> {
-    // Step 1: The message to verify is "hello world" (same as for Bitcoin)
-    let message = "hello world";
-    let message_bytes = message.as_bytes();
-
-    // Step 2: Verify the signature
+    // Verify the signature
     ok_or_bad_request!(
-        verifying_key.verify(message_bytes, signature),
+        verifying_key.verify(expected_message.as_bytes(), signature),
         "Failed to verify ML-DSA signature"
     );
 
@@ -810,8 +817,12 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let (address, signature, _, _, _) = validate_inputs(&proof_request).unwrap();
-        let result = verify_bitcoin_ownership(&address, &signature);
+        let (address, signature, ml_dsa_address, _, _) = validate_inputs(&proof_request).unwrap();
+        let expected_message = format!(
+            "I want to permanently link my Bitcoin address {} with my post-quantum address {}",
+            address, ml_dsa_address
+        );
+        let result = verify_bitcoin_ownership(&address, &signature, &expected_message);
 
         assert!(
             result.is_ok(),
@@ -830,10 +841,14 @@ mod tests {
         };
 
         // Validation should pass since it's a valid signature format, just for the wrong message
-        let (address, signature, _, _, _) = validate_inputs(&proof_request).unwrap();
+        let (address, signature, ml_dsa_address, _, _) = validate_inputs(&proof_request).unwrap();
+        let expected_message = format!(
+            "I want to permanently link my Bitcoin address {} with my post-quantum address {}",
+            address, ml_dsa_address
+        );
 
         // Verification should fail because the signature is for a different message
-        let result = verify_bitcoin_ownership(&address, &signature);
+        let result = verify_bitcoin_ownership(&address, &signature, &expected_message);
         assert!(
             result.is_err(),
             "Verification should fail with wrong message signature"
@@ -887,10 +902,14 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let (address, signature, _, _, _) = validate_inputs(&proof_request).unwrap();
+        let (address, signature, ml_dsa_address, _, _) = validate_inputs(&proof_request).unwrap();
+        let expected_message = format!(
+            "I want to permanently link my Bitcoin address {} with my post-quantum address {}",
+            address, ml_dsa_address
+        );
 
         // Verify ownership
-        let result = verify_bitcoin_ownership(&address, &signature);
+        let result = verify_bitcoin_ownership(&address, &signature, &expected_message);
         assert!(
             result.is_ok(),
             "Bitcoin ownership verification should succeed with valid P2WPKH signature"
@@ -901,10 +920,6 @@ mod tests {
     fn test_ml_dsa_verification_succeeds() {
         let seed: [u8; 32] = rand::random();
         let keypair = MlDsa44::key_gen_internal(&seed.into());
-        let message = b"hello world";
-
-        // Sign the message
-        let signature = keypair.signing_key().sign(message);
 
         // Create the address from the public key
         let address = MlDsaAddress {
@@ -912,8 +927,21 @@ mod tests {
                 .to_byte_array(),
         };
 
+        let expected_message = format!(
+            "I want to permanently link my Bitcoin address {} with my post-quantum address {}",
+            VALID_BITCOIN_ADDRESS_P2PKH, address
+        );
+
+        // Sign the message
+        let signature = keypair.signing_key().sign(expected_message.as_bytes());
+
         // Verify ownership
-        let result = verify_ml_dsa_ownership(&address, keypair.verifying_key(), &signature);
+        let result = verify_ml_dsa_ownership(
+            &address,
+            keypair.verifying_key(),
+            &signature,
+            &expected_message,
+        );
         assert!(
             result.is_ok(),
             "ML-DSA verification should succeed with valid inputs"
@@ -924,10 +952,7 @@ mod tests {
     fn test_ml_dsa_verification_fails_wrong_message() {
         let seed: [u8; 32] = rand::random();
         let keypair = MlDsa44::key_gen_internal(&seed.into());
-        let wrong_message = b"wrong message";
-
-        // Sign the wrong message
-        let signature = keypair.signing_key().sign(wrong_message);
+        let wrong_message = "wrong message";
 
         // Create the address from the public key
         let address = MlDsaAddress {
@@ -935,8 +960,21 @@ mod tests {
                 .to_byte_array(),
         };
 
+        // Sign the wrong message
+        let signature = keypair.signing_key().sign(wrong_message.as_bytes());
+
+        let expected_message = format!(
+            "I want to permanently link my Bitcoin address {} with my post-quantum address {}",
+            VALID_BITCOIN_ADDRESS_P2PKH, address
+        );
+
         // Verify should fail because signature was for wrong message
-        let result = verify_ml_dsa_ownership(&address, keypair.verifying_key(), &signature);
+        let result = verify_ml_dsa_ownership(
+            &address,
+            keypair.verifying_key(),
+            &signature,
+            &expected_message,
+        );
         assert!(
             result.is_err(),
             "ML-DSA verification should fail with wrong message"
@@ -949,10 +987,6 @@ mod tests {
         let seed2: [u8; 32] = rand::random();
         let keypair1 = MlDsa44::key_gen_internal(&seed1.into());
         let keypair2 = MlDsa44::key_gen_internal(&seed2.into());
-        let message = b"hello world";
-
-        // Sign with first key
-        let signature = keypair1.signing_key().sign(message);
 
         // Create address from second public key
         let wrong_address = MlDsaAddress {
@@ -960,8 +994,21 @@ mod tests {
                 .to_byte_array(),
         };
 
+        let expected_message = format!(
+            "I want to permanently link my Bitcoin address {} with my post-quantum address {}",
+            VALID_BITCOIN_ADDRESS_P2PKH, wrong_address
+        );
+
+        // Sign with first key but use wrong address
+        let signature = keypair1.signing_key().sign(expected_message.as_bytes());
+
         // Verify should fail because address doesn't match the public key
-        let result = verify_ml_dsa_ownership(&wrong_address, keypair1.verifying_key(), &signature);
+        let result = verify_ml_dsa_ownership(
+            &wrong_address,
+            keypair1.verifying_key(),
+            &signature,
+            &expected_message,
+        );
         assert!(
             result.is_err(),
             "ML-DSA verification should fail with mismatched address"
