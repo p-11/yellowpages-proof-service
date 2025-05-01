@@ -601,7 +601,7 @@ mod tests {
 
     // Mock handler for attestation requests
     fn mock_attestation_handler(
-        expected_bitcoin_address: &str,
+        expected_bitcoin_address: String,
         expected_ml_dsa_address: &str,
         Json(request): Json<AttestationRequest>,
     ) -> impl IntoResponse {
@@ -633,7 +633,7 @@ mod tests {
 
     // Mock handler for data layer requests
     fn mock_data_layer_handler(
-        expected_bitcoin_address: &str,
+        expected_bitcoin_address: String,
         expected_ml_dsa_address: &str,
         expected_version: &str,
         request: (axum::http::HeaderMap, Json<UploadProofRequest>),
@@ -895,95 +895,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    #[serial]
-    async fn test_end_to_end() {
-        const TEST_VERSION: &str = "1.1.0";
-
-        // Start mock attestation server
-        let mock_attestation_app = Router::new().route(
-            "/attestation-doc",
-            post(|req| async move {
-                mock_attestation_handler(VALID_BITCOIN_ADDRESS_P2PKH, VALID_ML_DSA_ADDRESS, req)
-            }),
-        );
-
-        // Start mock data layer server
-        let mock_data_layer_app = Router::new().route(
-            "/v1/proofs",
-            post(|req| async move {
-                mock_data_layer_handler(
-                    VALID_BITCOIN_ADDRESS_P2PKH,
-                    VALID_ML_DSA_ADDRESS,
-                    TEST_VERSION,
-                    req,
-                )
-            }),
-        );
-
-        let mock_attestation_listener = tokio::net::TcpListener::bind("127.0.0.1:9999")
-            .await
-            .unwrap();
-        let mock_data_layer_listener = tokio::net::TcpListener::bind("127.0.0.1:9998")
-            .await
-            .unwrap();
-
-        // Spawn both servers to run concurrently
-        tokio::spawn(async move {
-            axum::serve(mock_attestation_listener, mock_attestation_app)
-                .await
-                .unwrap();
-        });
-        tokio::spawn(async move {
-            axum::serve(mock_data_layer_listener, mock_data_layer_app)
-                .await
-                .unwrap();
-        });
-
-        // Give the servers a moment to start
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        let proof_request = ProofRequest {
-            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
-            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
-            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
-            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
-            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
-        };
-
-        // Call the main function with the request
-        let response = Box::pin(prove(
-            Json(proof_request),
-            Config {
-                data_layer_url: "http://127.0.0.1:9998".to_string(),
-                data_layer_api_key: "mock_api_key".to_string(),
-                version: TEST_VERSION.to_string(),
-            },
-        ))
-        .await;
-        assert_eq!(response, StatusCode::NO_CONTENT);
-        // test that invalid address fails
-        let proof_request = ProofRequest {
-            bitcoin_address: INVALID_ADDRESS.to_string(),
-            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
-            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
-            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
-            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
-        };
-
-        // This should fail during validation with a BAD_REQUEST
-        let response = Box::pin(prove(
-            Json(proof_request),
-            Config {
-                data_layer_url: "http://127.0.0.1:9998".to_string(),
-                data_layer_api_key: "mock_api_key".to_string(),
-                version: "1.1.0".to_string(),
-            },
-        ))
-        .await;
-        assert_eq!(response, StatusCode::BAD_REQUEST);
-    }
-
     #[test]
     fn test_ml_dsa_verification_succeeds() {
         let seed: [u8; 32] = rand::random();
@@ -1147,29 +1058,38 @@ mod tests {
         assert!(Config::sanity_check_api_key("").is_err());
     }
 
-    #[tokio::test]
-    #[serial]
-    async fn test_end_to_end_p2wpkh() {
+    async fn run_end_to_end_test(
+        bitcoin_address: &str,
+        bitcoin_signed_message: &str,
+        ml_dsa_signed_message: &str,
+        ml_dsa_address: &str,
+        ml_dsa_public_key: &str,
+    ) -> StatusCode {
         const TEST_VERSION: &str = "1.1.0";
 
-        // Start mock attestation server
+        let bitcoin_address = bitcoin_address.to_string();
         let mock_attestation_app = Router::new().route(
             "/attestation-doc",
-            post(|req| async move {
-                mock_attestation_handler(VALID_BITCOIN_ADDRESS_P2WPKH, VALID_ML_DSA_ADDRESS, req)
+            post({
+                let bitcoin_address = bitcoin_address.clone();
+                move |req| async move {
+                    mock_attestation_handler(bitcoin_address, VALID_ML_DSA_ADDRESS, req)
+                }
             }),
         );
 
-        // Start mock data layer server
         let mock_data_layer_app = Router::new().route(
             "/v1/proofs",
-            post(|req| async move {
-                mock_data_layer_handler(
-                    VALID_BITCOIN_ADDRESS_P2WPKH,
-                    VALID_ML_DSA_ADDRESS,
-                    TEST_VERSION,
-                    req,
-                )
+            post({
+                let bitcoin_address = bitcoin_address.clone();
+                move |req| async move {
+                    mock_data_layer_handler(
+                        bitcoin_address,
+                        VALID_ML_DSA_ADDRESS,
+                        TEST_VERSION,
+                        req,
+                    )
+                }
             }),
         );
 
@@ -1196,15 +1116,15 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let proof_request = ProofRequest {
-            bitcoin_address: VALID_BITCOIN_ADDRESS_P2WPKH.to_string(),
-            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH.to_string(),
-            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
-            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
-            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
+            bitcoin_address: bitcoin_address.to_string(),
+            bitcoin_signed_message: bitcoin_signed_message.to_string(),
+            ml_dsa_signed_message: ml_dsa_signed_message.to_string(),
+            ml_dsa_address: ml_dsa_address.to_string(),
+            ml_dsa_public_key: ml_dsa_public_key.to_string(),
         };
 
         // Call the main function with the request
-        let response = Box::pin(prove(
+        Box::pin(prove(
             Json(proof_request),
             Config {
                 data_layer_url: "http://127.0.0.1:9998".to_string(),
@@ -1212,7 +1132,48 @@ mod tests {
                 version: TEST_VERSION.to_string(),
             },
         ))
+        .await
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_p2pkh() {
+        let response = run_end_to_end_test(
+            VALID_BITCOIN_ADDRESS_P2PKH,
+            VALID_BITCOIN_SIGNED_MESSAGE_P2PKH,
+            VALID_ML_DSA_SIGNATURE,
+            VALID_ML_DSA_ADDRESS,
+            VALID_ML_DSA_PUBLIC_KEY,
+        )
         .await;
         assert_eq!(response, StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_p2wpkh() {
+        let response = run_end_to_end_test(
+            VALID_BITCOIN_ADDRESS_P2WPKH,
+            VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH,
+            VALID_ML_DSA_SIGNATURE,
+            VALID_ML_DSA_ADDRESS,
+            VALID_ML_DSA_PUBLIC_KEY,
+        )
+        .await;
+        assert_eq!(response, StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_invalid_address() {
+        let response = run_end_to_end_test(
+            INVALID_ADDRESS,
+            VALID_BITCOIN_SIGNED_MESSAGE_P2PKH,
+            VALID_ML_DSA_SIGNATURE,
+            VALID_ML_DSA_ADDRESS,
+            VALID_ML_DSA_PUBLIC_KEY,
+        )
+        .await;
+        assert_eq!(response, StatusCode::BAD_REQUEST);
     }
 }
