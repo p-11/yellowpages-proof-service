@@ -1,4 +1,8 @@
-use axum::{Json, Router, http::StatusCode, routing::post};
+use axum::{
+    Json, Router,
+    http::{Method, StatusCode, header},
+    routing::post,
+};
 use base64::{Engine, engine::general_purpose};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
@@ -13,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fmt;
 use std::str::FromStr;
+use tower_http::cors::{Any, CorsLayer};
 
 type ValidationResult = Result<
     (
@@ -219,8 +224,22 @@ async fn main() {
         }
     };
 
-    // build our application with routes
-    let app = Router::new().route("/prove", post(move |req| prove(req, config.clone())));
+    // Configure CORS to allow all origins but restrict headers
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::POST, Method::OPTIONS])
+        .allow_headers([
+            header::CONTENT_TYPE, // For JSON requests
+            // These 3 headers may be present in CORS preflight OPTIONS requests:
+            header::ACCESS_CONTROL_REQUEST_METHOD,
+            header::ACCESS_CONTROL_REQUEST_HEADERS,
+            header::ORIGIN,
+        ]);
+
+    // build our application with routes and CORS
+    let app = Router::new()
+        .route("/prove", post(move |req| prove(req, config.clone())))
+        .layer(cors);
 
     println!("Server running on http://0.0.0.0:8008");
 
