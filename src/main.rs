@@ -421,8 +421,7 @@ fn generate_expected_message(
     ml_dsa_address: &MlDsaAddress,
 ) -> String {
     format!(
-        "I want to permanently link my Bitcoin address {} with my post-quantum address {}",
-        bitcoin_address, ml_dsa_address
+        "I want to permanently link my Bitcoin address {bitcoin_address} with my post-quantum address {ml_dsa_address}"
     )
 }
 
