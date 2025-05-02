@@ -689,10 +689,10 @@ mod tests {
     // Constants for test data
     const VALID_BITCOIN_ADDRESS_P2PKH: &str = "1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm"; // P2PKH address
     const VALID_BITCOIN_SIGNED_MESSAGE_P2PKH: &str =
-        "IDLi71IPJDhCfh/Y6fSM7piVWBW8gLpa0Hes/vfPknhBR1U9rcd0VglYxAZ2M/zUk/V6iHIEXWNcvGaohMhaEGk="; // Signature for "hello world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS_P2PKH`
+        "IDLi71IPJDhCfh/Y6fSM7piVWBW8gLpa0Hes/vfPknhBR1U9rcd0VglYxAZ2M/zUk/V6iHIEXWNcvGaohMhaEGk="; // Signature made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS_P2PKH`
     const VALID_BITCOIN_ADDRESS_P2WPKH: &str = "bc1qqylnmgkvfa7t68e7a7m3ms2cs9xu6kxtzemdre"; // P2WPKH address (Segwit)
     const VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH: &str =
-        "ICvnq4g73Iv67P4PVXCFLJuP1kruGqZ+mNODXJOJNUpOT82TF0HA/MV99RXAiHUR8/iI4ccuEM6eB0S+/w16ACI="; // Signature for "hello world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS_P2WPKH`
+        "ICvnq4g73Iv67P4PVXCFLJuP1kruGqZ+mNODXJOJNUpOT82TF0HA/MV99RXAiHUR8/iI4ccuEM6eB0S+/w16ACI="; // Signature made using Electrum P2WPKH wallet with address `VALID_BITCOIN_ADDRESS_P2WPKH`
     const INVALID_SIGNATURE: &str =
         "IHHwE2wSfJU3Ej5CQA0c8YZIBBl9/knLNfwzOxFMQ3fqZNStxzkma0Jwko+T7JMAGIQqP5d9J2PcQuToq5QZAhk="; // Signature for "goodbye world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS_P2PKH`
     const P2TR_ADDRESS: &str = "bc1pxwww0ct9ue7e8tdnlmug5m2tamfn7q06sahstg39ys4c9f3340qqxrdu9k"; // Taproot address
