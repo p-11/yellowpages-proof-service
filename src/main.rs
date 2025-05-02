@@ -267,15 +267,23 @@ async fn prove(Json(proof_request): Json<ProofRequest>, config: Config) -> Statu
         Err(status) => return status,
     };
 
+    // Re-create the message that should have been signed by both keypairs
+    let expected_message = generate_expected_message(&bitcoin_address, &ml_dsa_address);
+
     // Step 2: Verify Bitcoin ownership
-    if let Err(status) = verify_bitcoin_ownership(&bitcoin_address, &bitcoin_signed_message) {
+    if let Err(status) =
+        verify_bitcoin_ownership(&bitcoin_address, &bitcoin_signed_message, &expected_message)
+    {
         return status;
     }
 
     // Step 3: Verify ML-DSA ownership
-    if let Err(status) =
-        verify_ml_dsa_ownership(&ml_dsa_address, &ml_dsa_public_key, &ml_dsa_signed_message)
-    {
+    if let Err(status) = verify_ml_dsa_ownership(
+        &ml_dsa_address,
+        &ml_dsa_public_key,
+        &ml_dsa_signed_message,
+        &expected_message,
+    ) {
         return status;
     }
 
@@ -427,16 +435,24 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
     ))
 }
 
+fn generate_expected_message(
+    bitcoin_address: &BitcoinAddress,
+    ml_dsa_address: &MlDsaAddress,
+) -> String {
+    format!(
+        "I want to permanently link my Bitcoin address {bitcoin_address} with my post-quantum address {ml_dsa_address}"
+    )
+}
+
 fn verify_bitcoin_ownership(
     address: &BitcoinAddress,
     signature: &BitcoinMessageSignature,
+    expected_message: &str,
 ) -> Result<(), StatusCode> {
     // Initialize secp256k1 context
     let secp = Secp256k1::verification_only();
 
-    // Step 1: Create the message hash for "hello world"
-    let message = "hello world";
-    let msg_hash = signed_msg_hash(message);
+    let msg_hash = signed_msg_hash(expected_message);
 
     // Step 2: Recover the public key from the signature
     let recovered_public_key = ok_or_bad_request!(
@@ -492,14 +508,11 @@ fn verify_ml_dsa_ownership(
     address: &MlDsaAddress,
     verifying_key: &MlDsaVerifyingKey<MlDsa44>,
     signature: &MlDsaSignature<MlDsa44>,
+    expected_message: &str,
 ) -> Result<(), StatusCode> {
-    // Step 1: The message to verify is "hello world" (same as for Bitcoin)
-    let message = "hello world";
-    let message_bytes = message.as_bytes();
-
-    // Step 2: Verify the signature
+    // Verify the signature
     ok_or_bad_request!(
-        verifying_key.verify(message_bytes, signature),
+        verifying_key.verify(expected_message.as_bytes(), signature),
         "Failed to verify ML-DSA signature"
     );
 
@@ -694,20 +707,22 @@ mod tests {
     // Constants for test data
     const VALID_BITCOIN_ADDRESS_P2PKH: &str = "1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm"; // P2PKH address
     const VALID_BITCOIN_SIGNED_MESSAGE_P2PKH: &str =
-        "IE1Eu4G/OO+hPFd//epm6mNy6EXoYmzY2k9Dw4mdDRkjL9wYE7GPFcFN6U38tpsBUXZlNVBZRSeLrbjrgZnkJ1I="; // Signature for "hello world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS_P2PKH`
+        "IDLi71IPJDhCfh/Y6fSM7piVWBW8gLpa0Hes/vfPknhBR1U9rcd0VglYxAZ2M/zUk/V6iHIEXWNcvGaohMhaEGk="; // Signature made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS_P2PKH`
     const VALID_BITCOIN_ADDRESS_P2WPKH: &str = "bc1qqylnmgkvfa7t68e7a7m3ms2cs9xu6kxtzemdre"; // P2WPKH address (Segwit)
     const VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH: &str =
-        "H079G3RGX1L4T7+4XN5lB+vMmrP1Pfxf2ExVFDWB042JXS0E9gu+te+1sYDsthUlc6yv0V8O3ctr9i19tCfkjjk="; // Signature for "hello world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS_P2WPKH`
+        "ICvnq4g73Iv67P4PVXCFLJuP1kruGqZ+mNODXJOJNUpOT82TF0HA/MV99RXAiHUR8/iI4ccuEM6eB0S+/w16ACI="; // Signature made using Electrum P2WPKH wallet with address `VALID_BITCOIN_ADDRESS_P2WPKH`
     const INVALID_SIGNATURE: &str =
         "IHHwE2wSfJU3Ej5CQA0c8YZIBBl9/knLNfwzOxFMQ3fqZNStxzkma0Jwko+T7JMAGIQqP5d9J2PcQuToq5QZAhk="; // Signature for "goodbye world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS_P2PKH`
     const P2TR_ADDRESS: &str = "bc1pxwww0ct9ue7e8tdnlmug5m2tamfn7q06sahstg39ys4c9f3340qqxrdu9k"; // Taproot address
     const INVALID_ADDRESS: &str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7Divf"; // Malformed address
 
     // ML-DSA test data
-    const VALID_ML_DSA_ADDRESS: &str = "YHUo9V2Od8JTXsNATpQONELI3Qhgs6hxbmUH/pwDEbQ="; // Base64-encoded SHA256 hash of ML-DSA public key generated using Noble post-quantum
-    const VALID_ML_DSA_SIGNATURE: &str = "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"; // signature created using Noble post-quantum
-    const VALID_ML_DSA_PUBLIC_KEY: &str = "Ttj/YnqXKud1qVz4ZeKC1ACSfwQK/E5Xu01iP4ZZ2Nc78UTdqlayxCdbWYxtM4T+fADNtbP2ogT1Yj8VLEIkfDrJZw6M6Jgz305NSeFz3nAG9tlVr9C0kvWbgQ48frvE3zLVdtAtkG8JcPZ1GvOW4lcK1/HlKV+mDXp5ghWuL/NXpMaA2IGMgmSU5mma4/BC73x7qNwQE8vV6pk91nxTXUC+ChQmnPAkxVpnk8PbZYeZK7N0oO8VtEuzewuvc6/rFWxRvi2QzAcFumDryXdf5pRZfCbsMM8hwW30lfnQSlgadXpS1SMcogF8m9qCvcerm81ioQoDKfmw+mh4nYZ3VSTC545J2Ahl0HX6mMQlkeax2lWEinT2J9wd+rzI5wB+3owEnZWA5iVZ0bjJlsHPt8rOpBVb4WTplMdxnaA1yvTaphbg8rd1YV+F2o8VHdaBWiRSC4siJCs8ssdOvEOr3OMwIBQjIlhMsrzuIQ45jNYXYn7UeG1JX1XfAO3+df0jZGj3NY/K7slrZmtUt97SDlH9UX+FMZFKRJXEKIAHNyzQjDUFkM6KlfXVDnIOAoa+JKbyczCetbDjP+E2qLCIKZrmTCd/YqbfiN+iUflnwQZNBlCraZDbdmMtJS5sC72A53GnjMytQBZH7nE+C5XH4/K4041a/uVDSaMkRQYoN2p4Fy7mS2+LKGZTZ+51OXNfGSyyqLkNku3+OwGgNcjWzUSGUSDh0fNA1D2D0Xe3HrA+um3b7CAPkjHuLdmLOrnp6BQFOu6h8cbZZ224x55IyJvdfGdzPWloJ3lLch3cuPjyZ+TkNGS54kTo8SA4uj0Fk8LrOoz8dVhGUdn0WgWSctvxIuCNW0Rh5dSF31FZt8/+pLIm3ysrhIcn66fmj1UNrYbomAqgYpUv+R62RxUGB3N/7Zedi1Ue9gkp9aO+Q0nnfXF1L4NwDJs2cEfTTCdQdlCeal4qHZOhcmazVT4AWXHQauluG4x3WNU0emxCkm6WytCBWLq1vso1JdbxYe90HFz7Fin1ZHed+Ablq7oDz0PtdE68fIFGMbPlEjaBNp5D8F+vkqr6214BDhqwJpkmK43Po/lGqSodenkVsGEojH+r3L/DuauCRrvEwEATs0ap4GX0XV5u7tRq5EMbOa5ibQGxcNThEpvEiy3Y6nlYt8D/JfVs/IuVQgXn0I9X+gfZR5LBs3HY3F8LPuEgUyVX4oaFB5vVEvsa7+fUP/xmmdjmO/PXDCZxptWV2qhWfy3TU6WbuntHLoRxIN1bdw7cNx0JNxUxlUJH6MBKK6U+IxNP9jdmpUfjhRLhrL14I8MfdXBYnlYOJv886z9HHxrecVEgX129ht4vKmxq5m7IA+o9pOnZWep2BWBLWfgoWIsQ1HcTCdRJuVu1leuz5mbKPDILUBPztrdKfuHqDWkqYRINZajKyJAR1UNwNJUCPPqMEYmyeDuiDAFgHlbn4BKXY45FOWedOvmrQkEMwzAa5GgZYUuwpZ3IYR3QG23vQGcM9Q5TdP/bA4H7yKk/fFE7CQV0CQ5B8fz12ndeATJiySL6XOYf2F4hd+uCjk5zHVzJG+aGCB1zuj+tCBlg1hvPIsWlkYPPmVga2Oa2pgb3+mvoq/0uoSsPo72fKuo7DeuZF09q2e/aoQfBwpJbMmMcltyHVq0IDO2W9DaCqw7TxDW2ousGsxqk/JcGX+UAXneIrx/bicSZArzxNkv/KbVo1hmLeS9uXLntWF5gZWKocg=="; // Public key generated using Noble post-quantum
+    const VALID_ML_DSA_ADDRESS: &str = "iJeO896MYWHt86o8JRfEGcl6fgInl3WxvTwI5VK1Gl4="; // Base64-encoded SHA256 hash of ML-DSA public key generated using Noble post-quantum
+    const VALID_ML_DSA_SIGNATURE: &str = "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"; // signature created using Noble post-quantum
+    const VALID_ML_DSA_PUBLIC_KEY: &str = "e+ffcul9XkuQCkiCEYX2ES6KMGJ9c7+Z0PFfhnJRckbaHzh4EH9hcEkUoFZ4gK2ta6/xPzgxB1yTT92wPZw8SmrK3DeLMz9mkst0IWkSzJ/TPPHRcSYJekO+CLV8k7uXsGSSoK4fbLqkX8leQFMCzjzRYg06zb3SD7iQwK3O8dP2WWLa9PkBMl1LECCBtTHrxoqyYtKopNbn3wICOOxI1jjTTL46AZnE6Vw2vQdLB/Qg59Pq6su8P3zEqBbsVPwPpT9ZbBNCHE+puWjdYnOfttj6DZ748CRHibQ9WTkH+VpxssIxU62nsYes/fV85nDozwddZggZoLfRsmSlG1Yz6h4m5hMMu9Nku9myTTw4UCiGSxZmad+yIjl7hh6J3wDaLMDA6SXajLSXTk2RwmnsEUlYs+uXS6Wj5wzg+bLQDQVMkU+doOf4vPTArf4uwzJdZ9Ghp8vjHd+rQgKjuo+Hy+HWz4JgvaQXlln+3yF0eY4/v01Bhe8BwVCbFZX8ts2Ay53gJmZEtsnXw3d5xedAMO9LJt4UqwovnmWCuApzAG9jyvG3Wxxe572E725S4vLtgnESzfrsD3wWo/A0oP+wk4oOFjhRDdVwHzwBDiHPhl43b/lt6omQuxK+xF0BJ77X/VhAoCx5zwIQ1GnmtXmP5xqx8f+e9ceFWNSxBPVKakKx/BveCxF1uOLc7DZUFLDVxRBURiF4BQX/670+FaYF2BWS3XtxfCqxaCz3F177qUev3pYuwpvSIj6WNSmU8uyxvibSzvYtA50gQtznTfteWja14B8AB+rgagz5nEzRzO7u1+QmxbdvEyBKvmWzNtnvsNqee4LhU9sl6rPdyUScmDrCPVLiPhrqY/sBVfxzX6z40suflYFPYU+fE6lApXnpyDB8he25DmnmPYTEsCq9d2uYaYTSBAgeir0qi9Jnjj/mcJ/3sNwwTlh7Tp6ahJlqWEUJ4myGxcHEesgWAeIrqJ6bhHTxP1n+do4ffry4CMcAjoAPAwYY0JUTYANy722LbOgiN+z5KUryC/MYjw/azOHFcpYjsGR60fARG03yVBgNBuD5okkmxtrAGdS4w85UDMAa/dwobUI5bdigFHP0Av6hHQ5uxeaxt1gAO53veGmA8aIOidhtZyHhlv+ANl9VYyZMOdPP1DjBTd8AQTIGR2JglmGzE8/00Ndx736MNdVzxNG0iKOvLlgl3cd1cEjW6hfC47juSDCgZTs9oPeo2mr1qvtak7zVd/yByjP9KHh0mjCi3cZDButaTe/oic4bdf24xQDtahSEJpAf49i9gzIpqxG92pyM7HRaVSvScFmCNnNKLJSDCeYw4+zlU+jawGKPjX6ebFDGFV1gNiPvkZdYd/5UXFwpHt5saj/Lgfoe/BtJWUx53TNkYlTNytflgV/ssFo8k9aYlIq2SDDKeZdlZexeNJOvhr8yntOQzLK6WWVONUgilTFNKX3+NQTmMR1LhA7VSP17+/3NjM0wEaz/JpKRoqMMvrgzl2A/6s019UMoT81hGXNtk9Ed8vxtdeNi1BC+SHWWyazundxXMQ4/gD7PnJXQJduz0QZ8quxRQZZTn+u+t1hKyMQikRKqephJaIQv9NLnKffPncEii9ukfRuLLCy7hPFuAho1Bfgi6rJMN0AxlX9URe6LB6vjLMNdTvWVqCHtBvay4scJg58my00razBF8BhQe7db+UJiv5JwADSJ2fwO/oooReksH3Sv1U4UOx5Y7kK8bbChFg=="; // Public key generated using Noble post-quantum
     const INVALID_ML_DSA_ADDRESS: &str = "invalid_address";
+
+    const VALID_ML_DSA_SIGNATURE_P2WPKH: &str = "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"; // ML-DSA signature associated with P2WPKH address
 
     #[test]
     fn test_validate_inputs_valid_data() {
@@ -829,8 +844,9 @@ mod tests {
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let (address, signature, _, _, _) = validate_inputs(&proof_request).unwrap();
-        let result = verify_bitcoin_ownership(&address, &signature);
+        let (address, signature, ml_dsa_address, _, _) = validate_inputs(&proof_request).unwrap();
+        let expected_message = generate_expected_message(&address, &ml_dsa_address);
+        let result = verify_bitcoin_ownership(&address, &signature, &expected_message);
 
         assert!(
             result.is_ok(),
@@ -849,10 +865,10 @@ mod tests {
         };
 
         // Validation should pass since it's a valid signature format, just for the wrong message
-        let (address, signature, _, _, _) = validate_inputs(&proof_request).unwrap();
+        let (address, signature, ml_dsa_address, _, _) = validate_inputs(&proof_request).unwrap();
+        let expected_message = generate_expected_message(&address, &ml_dsa_address);
+        let result = verify_bitcoin_ownership(&address, &signature, &expected_message);
 
-        // Verification should fail because the signature is for a different message
-        let result = verify_bitcoin_ownership(&address, &signature);
         assert!(
             result.is_err(),
             "Verification should fail with wrong message signature"
@@ -881,7 +897,7 @@ mod tests {
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2WPKH.to_string(),
             bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH.to_string(),
-            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE_P2WPKH.to_string(),
             ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
@@ -901,15 +917,15 @@ mod tests {
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2WPKH.to_string(),
             bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH.to_string(),
-            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE_P2WPKH.to_string(),
             ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
             ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
         };
 
-        let (address, signature, _, _, _) = validate_inputs(&proof_request).unwrap();
+        let (address, signature, ml_dsa_address, _, _) = validate_inputs(&proof_request).unwrap();
+        let expected_message = generate_expected_message(&address, &ml_dsa_address);
+        let result = verify_bitcoin_ownership(&address, &signature, &expected_message);
 
-        // Verify ownership
-        let result = verify_bitcoin_ownership(&address, &signature);
         assert!(
             result.is_ok(),
             "Bitcoin ownership verification should succeed with valid P2WPKH signature"
@@ -920,10 +936,6 @@ mod tests {
     fn test_ml_dsa_verification_succeeds() {
         let seed: [u8; 32] = rand::random();
         let keypair = MlDsa44::key_gen_internal(&seed.into());
-        let message = b"hello world";
-
-        // Sign the message
-        let signature = keypair.signing_key().sign(message);
 
         // Create the address from the public key
         let address = MlDsaAddress {
@@ -931,8 +943,19 @@ mod tests {
                 .to_byte_array(),
         };
 
-        // Verify ownership
-        let result = verify_ml_dsa_ownership(&address, keypair.verifying_key(), &signature);
+        let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
+            .unwrap()
+            .require_network(Network::Bitcoin)
+            .unwrap();
+        let expected_message = generate_expected_message(&bitcoin_address, &address);
+        let signature = keypair.signing_key().sign(expected_message.as_bytes());
+
+        let result = verify_ml_dsa_ownership(
+            &address,
+            keypair.verifying_key(),
+            &signature,
+            &expected_message,
+        );
         assert!(
             result.is_ok(),
             "ML-DSA verification should succeed with valid inputs"
@@ -943,10 +966,7 @@ mod tests {
     fn test_ml_dsa_verification_fails_wrong_message() {
         let seed: [u8; 32] = rand::random();
         let keypair = MlDsa44::key_gen_internal(&seed.into());
-        let wrong_message = b"wrong message";
-
-        // Sign the wrong message
-        let signature = keypair.signing_key().sign(wrong_message);
+        let wrong_message = "wrong message";
 
         // Create the address from the public key
         let address = MlDsaAddress {
@@ -954,8 +974,21 @@ mod tests {
                 .to_byte_array(),
         };
 
-        // Verify should fail because signature was for wrong message
-        let result = verify_ml_dsa_ownership(&address, keypair.verifying_key(), &signature);
+        // Sign the wrong message
+        let signature = keypair.signing_key().sign(wrong_message.as_bytes());
+
+        let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
+            .unwrap()
+            .require_network(Network::Bitcoin)
+            .unwrap();
+        let expected_message = generate_expected_message(&bitcoin_address, &address);
+
+        let result = verify_ml_dsa_ownership(
+            &address,
+            keypair.verifying_key(),
+            &signature,
+            &expected_message,
+        );
         assert!(
             result.is_err(),
             "ML-DSA verification should fail with wrong message"
@@ -968,10 +1001,6 @@ mod tests {
         let seed2: [u8; 32] = rand::random();
         let keypair1 = MlDsa44::key_gen_internal(&seed1.into());
         let keypair2 = MlDsa44::key_gen_internal(&seed2.into());
-        let message = b"hello world";
-
-        // Sign with first key
-        let signature = keypair1.signing_key().sign(message);
 
         // Create address from second public key
         let wrong_address = MlDsaAddress {
@@ -979,8 +1008,19 @@ mod tests {
                 .to_byte_array(),
         };
 
-        // Verify should fail because address doesn't match the public key
-        let result = verify_ml_dsa_ownership(&wrong_address, keypair1.verifying_key(), &signature);
+        let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
+            .unwrap()
+            .require_network(Network::Bitcoin)
+            .unwrap();
+        let expected_message = generate_expected_message(&bitcoin_address, &wrong_address);
+        let signature = keypair1.signing_key().sign(expected_message.as_bytes());
+
+        let result = verify_ml_dsa_ownership(
+            &wrong_address,
+            keypair1.verifying_key(),
+            &signature,
+            &expected_message,
+        );
         assert!(
             result.is_err(),
             "ML-DSA verification should fail with mismatched address"
@@ -1176,7 +1216,7 @@ mod tests {
         let response = run_end_to_end_test(
             VALID_BITCOIN_ADDRESS_P2WPKH,
             VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH,
-            VALID_ML_DSA_SIGNATURE,
+            VALID_ML_DSA_SIGNATURE_P2WPKH,
             VALID_ML_DSA_ADDRESS,
             VALID_ML_DSA_PUBLIC_KEY,
         )
@@ -1196,5 +1236,60 @@ mod tests {
         )
         .await;
         assert_eq!(response, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_verify_ml_dsa_hardcoded_signature() {
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
+            ml_dsa_signed_message: VALID_ML_DSA_SIGNATURE.to_string(),
+            ml_dsa_address: VALID_ML_DSA_ADDRESS.to_string(),
+            ml_dsa_public_key: VALID_ML_DSA_PUBLIC_KEY.to_string(),
+        };
+
+        let (bitcoin_address, _, ml_dsa_address, ml_dsa_public_key, ml_dsa_signed_message) =
+            validate_inputs(&proof_request).unwrap();
+
+        let expected_message = generate_expected_message(&bitcoin_address, &ml_dsa_address);
+
+        let result = verify_ml_dsa_ownership(
+            &ml_dsa_address,
+            &ml_dsa_public_key,
+            &ml_dsa_signed_message,
+            &expected_message,
+        );
+
+        assert!(
+            result.is_ok(),
+            "ML-DSA verification should succeed with hardcoded signature"
+        );
+    }
+
+    #[test]
+    fn test_generate_expected_message() {
+        // Setup test data
+        let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
+            .unwrap()
+            .require_network(Network::Bitcoin)
+            .unwrap();
+        let ml_dsa_address = MlDsaAddress::new(
+            &general_purpose::STANDARD
+                .decode(VALID_ML_DSA_ADDRESS)
+                .unwrap(),
+        )
+        .unwrap();
+
+        // Expected output
+        let expected_message = "I want to permanently link my Bitcoin address 1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm with my post-quantum address iJeO896MYWHt86o8JRfEGcl6fgInl3WxvTwI5VK1Gl4=";
+
+        // Call the function
+        let result = generate_expected_message(&bitcoin_address, &ml_dsa_address);
+
+        // Assert the result
+        assert_eq!(
+            result, expected_message,
+            "Generated message should match expected format"
+        );
     }
 }
