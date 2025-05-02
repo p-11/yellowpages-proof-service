@@ -229,16 +229,6 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-fn generate_expected_message(
-    bitcoin_address: &BitcoinAddress,
-    ml_dsa_address: &MlDsaAddress,
-) -> String {
-    format!(
-        "I want to permanently link my Bitcoin address {} with my post-quantum address {}",
-        bitcoin_address, ml_dsa_address
-    )
-}
-
 async fn prove(Json(proof_request): Json<ProofRequest>, config: Config) -> StatusCode {
     // Log the received data
     println!(
@@ -424,6 +414,16 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
         ml_dsa_public_key,
         ml_dsa_signed_message,
     ))
+}
+
+fn generate_expected_message(
+    bitcoin_address: &BitcoinAddress,
+    ml_dsa_address: &MlDsaAddress,
+) -> String {
+    format!(
+        "I want to permanently link my Bitcoin address {} with my post-quantum address {}",
+        bitcoin_address, ml_dsa_address
+    )
 }
 
 fn verify_bitcoin_ownership(
@@ -1245,6 +1245,33 @@ mod tests {
         assert!(
             result.is_ok(),
             "ML-DSA verification should succeed with hardcoded signature"
+        );
+    }
+
+    #[test]
+    fn test_generate_expected_message() {
+        // Setup test data
+        let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
+            .unwrap()
+            .require_network(Network::Bitcoin)
+            .unwrap();
+        let ml_dsa_address = MlDsaAddress::new(
+            &general_purpose::STANDARD
+                .decode(VALID_ML_DSA_ADDRESS)
+                .unwrap(),
+        )
+        .unwrap();
+
+        // Expected output
+        let expected_message = "I want to permanently link my Bitcoin address 1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm with my post-quantum address iJeO896MYWHt86o8JRfEGcl6fgInl3WxvTwI5VK1Gl4=";
+
+        // Call the function
+        let result = generate_expected_message(&bitcoin_address, &ml_dsa_address);
+
+        // Assert the result
+        assert_eq!(
+            result, expected_message,
+            "Generated message should match expected format"
         );
     }
 }
