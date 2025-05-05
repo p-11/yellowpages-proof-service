@@ -255,6 +255,115 @@ async fn health(State(config): State<Config>) -> Json<serde_json::Value> {
     Json(body)
 }
 
+/// WebSocket handler that implements a stateful handshake followed by proof verification
+async fn ws_handler(State(config): State<Config>, ws: WebSocketUpgrade) -> impl IntoResponse {
+    println!("Received WebSocket upgrade request");
+    ws.on_upgrade(move |socket| handle_protocol(socket, config))
+}
+
+async fn handle_protocol(mut socket: WebSocket, config: Config) {
+    println!("WebSocket connection established");
+
+    // Step 1: Wait for handshake message
+    if let Some(Ok(msg)) = socket.recv().await {
+        match msg {
+            WsMessage::Text(text) => {
+                // Try to parse the handshake message
+                match serde_json::from_str::<HandshakeMessage>(&text) {
+                    Ok(handshake) if handshake.message == "hello" => {
+                        println!("Received valid handshake message");
+
+                        // Send acknowledgment
+                        let response = HandshakeResponse {
+                            message: "ack".to_string(),
+                        };
+                        if let Err(e) = socket
+                            .send(WsMessage::Text(
+                                serde_json::to_string(&response).unwrap().into(),
+                            ))
+                            .await
+                        {
+                            eprintln!("Failed to send handshake response: {}", e);
+                            return;
+                        }
+                    }
+                    _ => {
+                        eprintln!("Invalid handshake message");
+                        return;
+                    }
+                }
+            }
+            _ => {
+                eprintln!("Expected text message for handshake");
+                return;
+            }
+        }
+    } else {
+        eprintln!("Failed to receive handshake message");
+        return;
+    }
+
+    // Step 2: Wait for proof request
+    if let Some(Ok(msg)) = socket.recv().await {
+        match msg {
+            WsMessage::Text(text) => {
+                // Try to parse the proof request
+                match serde_json::from_str::<ProofRequest>(&text) {
+                    Ok(proof_request) => {
+                        // Process the proof request
+                        let status = prove(State(config), Json(proof_request)).await;
+
+                        // Send the status code back
+                        let response = serde_json::json!({
+                            "status": status.as_u16()
+                        });
+                        if let Err(e) = socket
+                            .send(WsMessage::Text(
+                                serde_json::to_string(&response).unwrap().into(),
+                            ))
+                            .await
+                        {
+                            eprintln!("Failed to send proof response: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to parse proof request: {}", e);
+                        let response = serde_json::json!({
+                            "status": StatusCode::BAD_REQUEST.as_u16()
+                        });
+                        if let Err(e) = socket
+                            .send(WsMessage::Text(
+                                serde_json::to_string(&response).unwrap().into(),
+                            ))
+                            .await
+                        {
+                            eprintln!("Failed to send error response: {}", e);
+                        }
+                    }
+                }
+            }
+            _ => {
+                eprintln!("Expected text message for proof request");
+                let response = serde_json::json!({
+                    "status": StatusCode::BAD_REQUEST.as_u16()
+                });
+                if let Err(e) = socket
+                    .send(WsMessage::Text(
+                        serde_json::to_string(&response).unwrap().into(),
+                    ))
+                    .await
+                {
+                    eprintln!("Failed to send error response: {}", e);
+                }
+            }
+        }
+    } else {
+        eprintln!("Failed to receive proof request");
+    }
+
+    println!("WebSocket connection terminated");
+}
+
 async fn prove(
     State(config): State<Config>,
     Json(proof_request): Json<ProofRequest>,
@@ -1289,113 +1398,4 @@ mod tests {
             "Generated message should match expected format"
         );
     }
-}
-
-/// WebSocket handler that implements a stateful handshake followed by proof verification
-async fn ws_handler(State(config): State<Config>, ws: WebSocketUpgrade) -> impl IntoResponse {
-    println!("Received WebSocket upgrade request");
-    ws.on_upgrade(move |socket| handle_socket(socket, config))
-}
-
-async fn handle_socket(mut socket: WebSocket, config: Config) {
-    println!("WebSocket connection established");
-
-    // Step 1: Wait for handshake message
-    if let Some(Ok(msg)) = socket.recv().await {
-        match msg {
-            WsMessage::Text(text) => {
-                // Try to parse the handshake message
-                match serde_json::from_str::<HandshakeMessage>(&text) {
-                    Ok(handshake) if handshake.message == "hello" => {
-                        println!("Received valid handshake message");
-
-                        // Send acknowledgment
-                        let response = HandshakeResponse {
-                            message: "ack".to_string(),
-                        };
-                        if let Err(e) = socket
-                            .send(WsMessage::Text(
-                                serde_json::to_string(&response).unwrap().into(),
-                            ))
-                            .await
-                        {
-                            eprintln!("Failed to send handshake response: {}", e);
-                            return;
-                        }
-                    }
-                    _ => {
-                        eprintln!("Invalid handshake message");
-                        return;
-                    }
-                }
-            }
-            _ => {
-                eprintln!("Expected text message for handshake");
-                return;
-            }
-        }
-    } else {
-        eprintln!("Failed to receive handshake message");
-        return;
-    }
-
-    // Step 2: Wait for proof request
-    if let Some(Ok(msg)) = socket.recv().await {
-        match msg {
-            WsMessage::Text(text) => {
-                // Try to parse the proof request
-                match serde_json::from_str::<ProofRequest>(&text) {
-                    Ok(proof_request) => {
-                        // Process the proof request
-                        let status = prove(State(config), Json(proof_request)).await;
-
-                        // Send the status code back
-                        let response = serde_json::json!({
-                            "status": status.as_u16()
-                        });
-                        if let Err(e) = socket
-                            .send(WsMessage::Text(
-                                serde_json::to_string(&response).unwrap().into(),
-                            ))
-                            .await
-                        {
-                            eprintln!("Failed to send proof response: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to parse proof request: {}", e);
-                        let response = serde_json::json!({
-                            "status": StatusCode::BAD_REQUEST.as_u16()
-                        });
-                        if let Err(e) = socket
-                            .send(WsMessage::Text(
-                                serde_json::to_string(&response).unwrap().into(),
-                            ))
-                            .await
-                        {
-                            eprintln!("Failed to send error response: {}", e);
-                        }
-                    }
-                }
-            }
-            _ => {
-                eprintln!("Expected text message for proof request");
-                let response = serde_json::json!({
-                    "status": StatusCode::BAD_REQUEST.as_u16()
-                });
-                if let Err(e) = socket
-                    .send(WsMessage::Text(
-                        serde_json::to_string(&response).unwrap().into(),
-                    ))
-                    .await
-                {
-                    eprintln!("Failed to send error response: {}", e);
-                }
-            }
-        }
-    } else {
-        eprintln!("Failed to receive proof request");
-    }
-
-    println!("WebSocket connection terminated");
 }
