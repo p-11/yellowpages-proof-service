@@ -227,7 +227,7 @@ async fn main() {
     // Configure CORS to allow all origins but restrict headers
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([Method::POST, Method::OPTIONS])
+        .allow_methods([Method::POST])
         .allow_headers([
             header::CONTENT_TYPE, // For JSON requests
             // These 3 headers may be present in CORS preflight OPTIONS requests:
