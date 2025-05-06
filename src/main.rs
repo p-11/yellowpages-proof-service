@@ -199,6 +199,26 @@ struct HandshakeResponse {
     message: String,
 }
 
+/// Helper type for WebSocket handshake errors
+type HandshakeError = (String, u16);
+
+/// Helper function to send the handshake acknowledgment
+async fn send_handshake_ack(socket: &mut WebSocket) -> Result<(), HandshakeError> {
+    let response = HandshakeResponse {
+        message: "ack".to_string(),
+    };
+
+    let json = serde_json::to_string(&response)
+        .map_err(|_| ("Internal server error".to_string(), close_code::ERROR))?;
+
+    socket
+        .send(WsMessage::Text(json.into()))
+        .await
+        .map_err(|_| ("Failed to send response".to_string(), close_code::ERROR))?;
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     // Parse config from environment
@@ -291,49 +311,36 @@ async fn send_error_and_close(socket: &mut WebSocket, error: &str, close_code: u
 }
 
 /// Performs the initial WebSocket handshake
-async fn perform_handshake(socket: &mut WebSocket) -> Result<(), (String, u16)> {
-    // Wait for handshake message
-    if let Some(Ok(msg)) = socket.recv().await {
-        match msg {
-            WsMessage::Text(text) => {
-                // Try to parse the handshake message
-                match serde_json::from_str::<HandshakeMessage>(&text) {
-                    Ok(handshake) if handshake.message == "hello" => {
-                        println!("Received valid handshake message");
-
-                        // Send acknowledgment
-                        let response = HandshakeResponse {
-                            message: "ack".to_string(),
-                        };
-                        match serde_json::to_string(&response) {
-                            Ok(json) => {
-                                if let Err(_) = socket.send(WsMessage::Text(json.into())).await {
-                                    return Err((
-                                        "Failed to send response".to_string(),
-                                        close_code::ERROR,
-                                    ));
-                                }
-                            }
-                            Err(_) => {
-                                return Err((
-                                    "Internal server error".to_string(),
-                                    close_code::ERROR,
-                                ));
-                            }
-                        }
-                        Ok(())
-                    }
-                    _ => Err(("Invalid handshake message".to_string(), close_code::POLICY)),
-                }
-            }
-            _ => Err(("Expected text message".to_string(), close_code::UNSUPPORTED)),
-        }
-    } else {
-        Err((
+async fn perform_handshake(socket: &mut WebSocket) -> Result<(), HandshakeError> {
+    // Wait for message
+    let msg = socket.recv().await.ok_or_else(|| {
+        (
             "Failed to receive handshake message".to_string(),
             close_code::PROTOCOL,
-        ))
+        )
+    })?;
+
+    // Ensure message is valid
+    let text = match msg {
+        Ok(WsMessage::Text(text)) => text,
+        _ => return Err(("Expected text message".to_string(), close_code::UNSUPPORTED)),
+    };
+
+    // Parse handshake message
+    let handshake: HandshakeMessage = serde_json::from_str(&text)
+        .map_err(|_| ("Invalid handshake message".to_string(), close_code::POLICY))?;
+
+    // Validate handshake content
+    if handshake.message != "hello" {
+        return Err(("Invalid handshake message".to_string(), close_code::POLICY));
     }
+
+    println!("Received valid handshake message");
+
+    // Send acknowledgment
+    send_handshake_ack(socket).await?;
+
+    Ok(())
 }
 
 async fn handle_protocol(mut socket: WebSocket, config: Config) {
