@@ -290,10 +290,9 @@ async fn send_error_and_close(socket: &mut WebSocket, error: &str, close_code: u
     }
 }
 
-async fn handle_protocol(mut socket: WebSocket, config: Config) {
-    println!("WebSocket connection established");
-
-    // Step 1: Wait for handshake message
+/// Performs the initial WebSocket handshake
+async fn perform_handshake(socket: &mut WebSocket) -> Result<(), (String, u16)> {
+    // Wait for handshake message
     if let Some(Ok(msg)) = socket.recv().await {
         match msg {
             WsMessage::Text(text) => {
@@ -309,54 +308,40 @@ async fn handle_protocol(mut socket: WebSocket, config: Config) {
                         match serde_json::to_string(&response) {
                             Ok(json) => {
                                 if let Err(_) = socket.send(WsMessage::Text(json.into())).await {
-                                    send_error_and_close(
-                                        &mut socket,
-                                        "Failed to send response",
+                                    return Err((
+                                        "Failed to send response".to_string(),
                                         close_code::ERROR,
-                                    )
-                                    .await;
-                                    return;
+                                    ));
                                 }
                             }
                             Err(_) => {
-                                send_error_and_close(
-                                    &mut socket,
-                                    "Internal server error",
+                                return Err((
+                                    "Internal server error".to_string(),
                                     close_code::ERROR,
-                                )
-                                .await;
-                                return;
+                                ));
                             }
                         }
+                        Ok(())
                     }
-                    _ => {
-                        send_error_and_close(
-                            &mut socket,
-                            "Invalid handshake message",
-                            close_code::POLICY,
-                        )
-                        .await;
-                        return;
-                    }
+                    _ => Err(("Invalid handshake message".to_string(), close_code::POLICY)),
                 }
             }
-            _ => {
-                send_error_and_close(
-                    &mut socket,
-                    "Expected text message",
-                    close_code::UNSUPPORTED,
-                )
-                .await;
-                return;
-            }
+            _ => Err(("Expected text message".to_string(), close_code::UNSUPPORTED)),
         }
     } else {
-        send_error_and_close(
-            &mut socket,
-            "Failed to receive handshake message",
+        Err((
+            "Failed to receive handshake message".to_string(),
             close_code::PROTOCOL,
-        )
-        .await;
+        ))
+    }
+}
+
+async fn handle_protocol(mut socket: WebSocket, config: Config) {
+    println!("WebSocket connection established");
+
+    // Step 1: Perform handshake
+    if let Err((error, code)) = perform_handshake(&mut socket).await {
+        send_error_and_close(&mut socket, &error, code).await;
         return;
     }
 
