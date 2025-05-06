@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     extract::State,
-    extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
+    extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade, close_code},
     http::{Method, StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
@@ -237,8 +237,18 @@ async fn main() {
     println!("Server running on http://0.0.0.0:8008");
 
     // run our app with hyper, listening globally on port 8008
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8008").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = match tokio::net::TcpListener::bind("0.0.0.0:8008").await {
+        Ok(listener) => listener,
+        Err(e) => {
+            eprintln!("Failed to bind to port 8008: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(e) = axum::serve(listener, app).await {
+        eprintln!("Error starting server: {e}");
+        std::process::exit(1);
+    }
 }
 
 /// Health check endpoint.
@@ -261,6 +271,25 @@ async fn ws_handler(State(config): State<Config>, ws: WebSocketUpgrade) -> impl 
     ws.on_upgrade(move |socket| handle_protocol(socket, config))
 }
 
+/// Helper function to send an error message and properly close the WebSocket connection
+async fn send_error_and_close(socket: &mut WebSocket, error: &str, close_code: u16) {
+    eprintln!("WebSocket error: {} (code: {})", error, close_code);
+
+    let close_frame = CloseFrame {
+        code: close_code,
+        reason: error.into(),
+    };
+
+    // Per WebSocket protocol, we can only try to send a close frame once.
+    // If it fails, we just log it - there's nothing else we can or should do.
+    if let Err(e) = socket.send(WsMessage::Close(Some(close_frame))).await {
+        eprintln!(
+            "Failed to send close frame (code: {}, reason: {}): {}",
+            close_code, error, e
+        );
+    }
+}
+
 async fn handle_protocol(mut socket: WebSocket, config: Config) {
     println!("WebSocket connection established");
 
@@ -277,29 +306,57 @@ async fn handle_protocol(mut socket: WebSocket, config: Config) {
                         let response = HandshakeResponse {
                             message: "ack".to_string(),
                         };
-                        if let Err(e) = socket
-                            .send(WsMessage::Text(
-                                serde_json::to_string(&response).unwrap().into(),
-                            ))
-                            .await
-                        {
-                            eprintln!("Failed to send handshake response: {}", e);
-                            return;
+                        match serde_json::to_string(&response) {
+                            Ok(json) => {
+                                if let Err(_) = socket.send(WsMessage::Text(json.into())).await {
+                                    send_error_and_close(
+                                        &mut socket,
+                                        "Failed to send response",
+                                        close_code::ERROR,
+                                    )
+                                    .await;
+                                    return;
+                                }
+                            }
+                            Err(_) => {
+                                send_error_and_close(
+                                    &mut socket,
+                                    "Internal server error",
+                                    close_code::ERROR,
+                                )
+                                .await;
+                                return;
+                            }
                         }
                     }
                     _ => {
-                        eprintln!("Invalid handshake message");
+                        send_error_and_close(
+                            &mut socket,
+                            "Invalid handshake message",
+                            close_code::POLICY,
+                        )
+                        .await;
                         return;
                     }
                 }
             }
             _ => {
-                eprintln!("Expected text message for handshake");
+                send_error_and_close(
+                    &mut socket,
+                    "Expected text message",
+                    close_code::UNSUPPORTED,
+                )
+                .await;
                 return;
             }
         }
     } else {
-        eprintln!("Failed to receive handshake message");
+        send_error_and_close(
+            &mut socket,
+            "Failed to receive handshake message",
+            close_code::PROTOCOL,
+        )
+        .await;
         return;
     }
 
@@ -317,48 +374,53 @@ async fn handle_protocol(mut socket: WebSocket, config: Config) {
                         let response = serde_json::json!({
                             "status": status.as_u16()
                         });
-                        if let Err(e) = socket
-                            .send(WsMessage::Text(
-                                serde_json::to_string(&response).unwrap().into(),
-                            ))
-                            .await
-                        {
-                            eprintln!("Failed to send proof response: {}", e);
+                        match serde_json::to_string(&response) {
+                            Ok(json) => {
+                                if let Err(_) = socket.send(WsMessage::Text(json.into())).await {
+                                    send_error_and_close(
+                                        &mut socket,
+                                        "Failed to send response",
+                                        close_code::ERROR,
+                                    )
+                                    .await;
+                                }
+                            }
+                            Err(_) => {
+                                send_error_and_close(
+                                    &mut socket,
+                                    "Internal server error",
+                                    close_code::ERROR,
+                                )
+                                .await;
+                            }
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Failed to parse proof request: {}", e);
-                        let response = serde_json::json!({
-                            "status": StatusCode::BAD_REQUEST.as_u16()
-                        });
-                        if let Err(e) = socket
-                            .send(WsMessage::Text(
-                                serde_json::to_string(&response).unwrap().into(),
-                            ))
-                            .await
-                        {
-                            eprintln!("Failed to send error response: {}", e);
-                        }
+                    Err(_) => {
+                        send_error_and_close(
+                            &mut socket,
+                            "Invalid proof request format",
+                            close_code::INVALID,
+                        )
+                        .await;
                     }
                 }
             }
             _ => {
-                eprintln!("Expected text message for proof request");
-                let response = serde_json::json!({
-                    "status": StatusCode::BAD_REQUEST.as_u16()
-                });
-                if let Err(e) = socket
-                    .send(WsMessage::Text(
-                        serde_json::to_string(&response).unwrap().into(),
-                    ))
-                    .await
-                {
-                    eprintln!("Failed to send error response: {}", e);
-                }
+                send_error_and_close(
+                    &mut socket,
+                    "Expected text message",
+                    close_code::UNSUPPORTED,
+                )
+                .await;
             }
         }
     } else {
-        eprintln!("Failed to receive proof request");
+        send_error_and_close(
+            &mut socket,
+            "Failed to receive proof request",
+            close_code::PROTOCOL,
+        )
+        .await;
     }
 
     println!("WebSocket connection terminated");
