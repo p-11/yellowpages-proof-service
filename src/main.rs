@@ -219,6 +219,62 @@ async fn send_handshake_ack(socket: &mut WebSocket) -> Result<(), HandshakeError
     Ok(())
 }
 
+/// Helper function to send a status response
+async fn send_status_response(
+    socket: &mut WebSocket,
+    status: StatusCode,
+) -> Result<(), HandshakeError> {
+    let response = serde_json::json!({
+        "status": status.as_u16()
+    });
+
+    let json = serde_json::to_string(&response)
+        .map_err(|_| ("Internal server error".to_string(), close_code::ERROR))?;
+
+    socket
+        .send(WsMessage::Text(json.into()))
+        .await
+        .map_err(|_| ("Failed to send response".to_string(), close_code::ERROR))?;
+
+    Ok(())
+}
+
+/// Handles the proof request step of the protocol
+async fn handle_proof_request(
+    socket: &mut WebSocket,
+    config: Config,
+) -> Result<(), HandshakeError> {
+    // Wait for message
+    let msg = socket.recv().await.ok_or_else(|| {
+        (
+            "Failed to receive proof request".to_string(),
+            close_code::PROTOCOL,
+        )
+    })?;
+
+    // Ensure message is valid
+    let text = match msg {
+        Ok(WsMessage::Text(text)) => text,
+        _ => return Err(("Expected text message".to_string(), close_code::UNSUPPORTED)),
+    };
+
+    // Parse proof request
+    let proof_request: ProofRequest = serde_json::from_str(&text).map_err(|_| {
+        (
+            "Invalid proof request format".to_string(),
+            close_code::INVALID,
+        )
+    })?;
+
+    // Process the proof request
+    let status = prove(State(config), Json(proof_request)).await;
+
+    // Send the status response
+    send_status_response(socket, status).await?;
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     // Parse config from environment
@@ -352,67 +408,9 @@ async fn handle_protocol(mut socket: WebSocket, config: Config) {
         return;
     }
 
-    // Step 2: Wait for proof request
-    if let Some(Ok(msg)) = socket.recv().await {
-        match msg {
-            WsMessage::Text(text) => {
-                // Try to parse the proof request
-                match serde_json::from_str::<ProofRequest>(&text) {
-                    Ok(proof_request) => {
-                        // Process the proof request
-                        let status = prove(State(config), Json(proof_request)).await;
-
-                        // Send the status code back
-                        let response = serde_json::json!({
-                            "status": status.as_u16()
-                        });
-                        match serde_json::to_string(&response) {
-                            Ok(json) => {
-                                if let Err(_) = socket.send(WsMessage::Text(json.into())).await {
-                                    send_error_and_close(
-                                        &mut socket,
-                                        "Failed to send response",
-                                        close_code::ERROR,
-                                    )
-                                    .await;
-                                }
-                            }
-                            Err(_) => {
-                                send_error_and_close(
-                                    &mut socket,
-                                    "Internal server error",
-                                    close_code::ERROR,
-                                )
-                                .await;
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        send_error_and_close(
-                            &mut socket,
-                            "Invalid proof request format",
-                            close_code::INVALID,
-                        )
-                        .await;
-                    }
-                }
-            }
-            _ => {
-                send_error_and_close(
-                    &mut socket,
-                    "Expected text message",
-                    close_code::UNSUPPORTED,
-                )
-                .await;
-            }
-        }
-    } else {
-        send_error_and_close(
-            &mut socket,
-            "Failed to receive proof request",
-            close_code::PROTOCOL,
-        )
-        .await;
+    // Step 2: Handle proof request
+    if let Err((error, code)) = handle_proof_request(&mut socket, config).await {
+        send_error_and_close(&mut socket, &error, code).await;
     }
 
     println!("WebSocket connection terminated");
