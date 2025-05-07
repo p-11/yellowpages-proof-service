@@ -924,25 +924,33 @@ mod tests {
         let seed: [u8; 32] = rand::random();
         let keypair = MlDsa44::key_gen_internal(&seed.into());
 
-        // Decode the hardcoded ML-DSA address
-        let address = decode_address(VALID_ML_DSA_ADDRESS).unwrap();
+        // Generate a fresh ML-DSA address using the public key
+        let pub_key_bytes = keypair.verifying_key().encode();
+        let params = pq_address::AddressParams {
+            network: pq_address::Network::Testnet, // Assuming Testnet for test
+            version: pq_address::Version::V1,      // Assuming V1 for test
+            pubkey_type: pq_address::PubKeyType::MlDsa44, // Assuming MlDsa44 for test
+            pubkey_bytes: &pub_key_bytes,
+        };
+        let address = pq_address::encode_address(&params).expect("valid address");
+        let decoded_address = decode_address(&address).unwrap();
 
         let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
             .unwrap()
             .require_network(Network::Bitcoin)
             .unwrap();
-        let expected_message = generate_expected_message(&bitcoin_address, &address);
+        let expected_message = generate_expected_message(&bitcoin_address, &decoded_address);
         let signature = keypair.signing_key().sign(expected_message.as_bytes());
 
         let result = verify_ml_dsa_ownership(
-            &address,
+            &decoded_address,
             keypair.verifying_key(),
             &signature,
             &expected_message,
         );
         assert!(
             result.is_ok(),
-            "ML-DSA verification should succeed with valid inputs"
+            "ML-DSA verification should succeed with correct address and signature"
         );
     }
 
