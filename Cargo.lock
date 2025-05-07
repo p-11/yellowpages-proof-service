@@ -884,9 +884,9 @@ dependencies = [
 
 [[package]]
 name = "pq_address"
-version = "0.1.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e76878adfc0db8bb138436f5beded8d4d5dc5bbd1781f4af110bf754edfee1d4"
+checksum = "48cdac0c4fbfa976a674c1f935a8fdc3d8ab5a30378f60a7545f5716a61675f5"
 dependencies = [
  "bech32",
  "hex",
@@ -1913,7 +1913,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64",
- "bech32",
  "bitcoin",
  "ml-dsa",
  "pq_address",

@@ -4,7 +4,6 @@ use axum::{
     routing::post,
 };
 use base64::{Engine, engine::general_purpose};
-use bech32::{Bech32m, Hrp, decode, encode};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
 use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_msg_hash};
@@ -17,7 +16,6 @@ use pq_address::{DecodedAddress, decode_address};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
-use std::fmt;
 use std::str::FromStr;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -182,24 +180,6 @@ impl Config {
             version,
         })
     }
-}
-
-// Function to encode DecodedAddress to a string
-fn encode_decoded_address(
-    address: &DecodedAddress,
-) -> Result<String, pq_address::AddressEncodeError> {
-    // Build the raw payload:
-    //  [ version.code(), pubkey_type.code(), pubkey_hash bytes… ]
-    let mut payload = Vec::with_capacity(2 + address.pubkey_hash.len());
-    payload.push(address.version.code());
-    payload.push(address.pubkey_type.code());
-    payload.extend(&address.pubkey_hash);
-
-    // Bech32m‑encode (adds the 6‑word checksum)
-    let hrp = address.network.hrp();
-    let encoded = encode::<Bech32m>(hrp, &payload)?;
-
-    Ok(encoded)
 }
 
 #[tokio::main]
@@ -423,9 +403,8 @@ fn generate_expected_message(
     bitcoin_address: &BitcoinAddress,
     ml_dsa_address: &DecodedAddress,
 ) -> String {
-    let ml_dsa_address_str = encode_decoded_address(ml_dsa_address).unwrap();
     format!(
-        "I want to permanently link my Bitcoin address {bitcoin_address} with my post-quantum address {ml_dsa_address_str}"
+        "I want to permanently link my Bitcoin address {bitcoin_address} with my post-quantum address {ml_dsa_address}"
     )
 }
 
@@ -528,7 +507,7 @@ async fn embed_addresses_in_proof(
     // Create and encode the user data struct
     let user_data = UserData {
         bitcoin_address: bitcoin_address.to_string(),
-        ml_dsa_44_address: encode_decoded_address(ml_dsa_address).unwrap(),
+        ml_dsa_44_address: ml_dsa_address.to_string(),
     };
 
     let user_data_base64 = ok_or_internal_error!(user_data.encode(), "Failed to encode user data");
@@ -578,7 +557,7 @@ async fn upload_to_data_layer(
 
     let request = UploadProofRequest {
         btc_address: bitcoin_address.to_string(),
-        ml_dsa_44_address: encode_decoded_address(ml_dsa_address).unwrap(),
+        ml_dsa_44_address: ml_dsa_address.to_string(),
         version: version.to_string(),
         proof: attestation_doc_base64.to_string(),
     };
