@@ -4,6 +4,7 @@ use axum::{
     routing::post,
 };
 use base64::{Engine, engine::general_purpose};
+use bech32::{Bech32m, Hrp, decode, encode};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
 use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_msg_hash};
@@ -187,13 +188,18 @@ impl Config {
 fn encode_decoded_address(
     address: &DecodedAddress,
 ) -> Result<String, pq_address::AddressEncodeError> {
-    let params = pq_address::AddressParams {
-        network: address.network,
-        version: address.version,
-        pubkey_type: address.pubkey_type,
-        pubkey_bytes: &address.pubkey_hash,
-    };
-    pq_address::encode_address(&params)
+    // Build the raw payload:
+    //  [ version.code(), pubkey_type.code(), pubkey_hash bytes… ]
+    let mut payload = Vec::with_capacity(2 + address.pubkey_hash.len());
+    payload.push(address.version.code());
+    payload.push(address.pubkey_type.code());
+    payload.extend(&address.pubkey_hash);
+
+    // Bech32m‑encode (adds the 6‑word checksum)
+    let hrp = address.network.hrp();
+    let encoded = encode::<Bech32m>(hrp, &payload)?;
+
+    Ok(encoded)
 }
 
 #[tokio::main]
@@ -417,8 +423,7 @@ fn generate_expected_message(
     bitcoin_address: &BitcoinAddress,
     ml_dsa_address: &DecodedAddress,
 ) -> String {
-    let ml_dsa_address_str =
-        encode_decoded_address(ml_dsa_address).unwrap_or_else(|_| "Invalid address".to_string());
+    let ml_dsa_address_str = encode_decoded_address(ml_dsa_address).unwrap();
     format!(
         "I want to permanently link my Bitcoin address {bitcoin_address} with my post-quantum address {ml_dsa_address_str}"
     )
@@ -523,8 +528,7 @@ async fn embed_addresses_in_proof(
     // Create and encode the user data struct
     let user_data = UserData {
         bitcoin_address: bitcoin_address.to_string(),
-        ml_dsa_44_address: encode_decoded_address(ml_dsa_address)
-            .unwrap_or_else(|_| "Invalid address".to_string()),
+        ml_dsa_44_address: encode_decoded_address(ml_dsa_address).unwrap(),
     };
 
     let user_data_base64 = ok_or_internal_error!(user_data.encode(), "Failed to encode user data");
@@ -574,8 +578,7 @@ async fn upload_to_data_layer(
 
     let request = UploadProofRequest {
         btc_address: bitcoin_address.to_string(),
-        ml_dsa_44_address: encode_decoded_address(ml_dsa_address)
-            .unwrap_or_else(|_| "Invalid address".to_string()),
+        ml_dsa_44_address: encode_decoded_address(ml_dsa_address).unwrap(),
         version: version.to_string(),
         proof: attestation_doc_base64.to_string(),
     };
@@ -690,7 +693,7 @@ mod tests {
     // Constants for test data
     const VALID_BITCOIN_ADDRESS_P2PKH: &str = "1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm"; // P2PKH address
     const VALID_BITCOIN_SIGNED_MESSAGE_P2PKH: &str =
-        "IDLi71IPJDhCfh/Y6fSM7piVWBW8gLpa0Hes/vfPknhBR1U9rcd0VglYxAZ2M/zUk/V6iHIEXWNcvGaohMhaEGk="; // Signature made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS_P2PKH`
+        "ID51XW7k70q1vdM3Ka1WGxXGHZwiJZK5hhJgvVvEE8niOGjjPJOnhIV1045In5A+OPPSpGV0IgStSQ9Kg5lUg4c="; // Signature made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS_P2PKH`
     const VALID_BITCOIN_ADDRESS_P2WPKH: &str = "bc1qqylnmgkvfa7t68e7a7m3ms2cs9xu6kxtzemdre"; // P2WPKH address (Segwit)
     const VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH: &str =
         "ICvnq4g73Iv67P4PVXCFLJuP1kruGqZ+mNODXJOJNUpOT82TF0HA/MV99RXAiHUR8/iI4ccuEM6eB0S+/w16ACI="; // Signature made using Electrum P2WPKH wallet with address `VALID_BITCOIN_ADDRESS_P2WPKH`
@@ -700,8 +703,9 @@ mod tests {
     const INVALID_ADDRESS: &str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7Divf"; // Malformed address
 
     // ML-DSA test data
-    const VALID_ML_DSA_ADDRESS: &str = "iJeO896MYWHt86o8JRfEGcl6fgInl3WxvTwI5VK1Gl4="; // Base64-encoded SHA256 hash of ML-DSA public key generated using Noble post-quantum
-    const VALID_ML_DSA_SIGNATURE: &str = "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"; // signature created using Noble post-quantum
+    const VALID_ML_DSA_ADDRESS: &str =
+        "yp1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hs5cdx7q"; // Base64-encoded SHA256 hash of ML-DSA public key generated using Noble post-quantum
+    const VALID_ML_DSA_SIGNATURE: &str = "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"; // signature created using Noble post-quantum
     const VALID_ML_DSA_PUBLIC_KEY: &str = "e+ffcul9XkuQCkiCEYX2ES6KMGJ9c7+Z0PFfhnJRckbaHzh4EH9hcEkUoFZ4gK2ta6/xPzgxB1yTT92wPZw8SmrK3DeLMz9mkst0IWkSzJ/TPPHRcSYJekO+CLV8k7uXsGSSoK4fbLqkX8leQFMCzjzRYg06zb3SD7iQwK3O8dP2WWLa9PkBMl1LECCBtTHrxoqyYtKopNbn3wICOOxI1jjTTL46AZnE6Vw2vQdLB/Qg59Pq6su8P3zEqBbsVPwPpT9ZbBNCHE+puWjdYnOfttj6DZ748CRHibQ9WTkH+VpxssIxU62nsYes/fV85nDozwddZggZoLfRsmSlG1Yz6h4m5hMMu9Nku9myTTw4UCiGSxZmad+yIjl7hh6J3wDaLMDA6SXajLSXTk2RwmnsEUlYs+uXS6Wj5wzg+bLQDQVMkU+doOf4vPTArf4uwzJdZ9Ghp8vjHd+rQgKjuo+Hy+HWz4JgvaQXlln+3yF0eY4/v01Bhe8BwVCbFZX8ts2Ay53gJmZEtsnXw3d5xedAMO9LJt4UqwovnmWCuApzAG9jyvG3Wxxe572E725S4vLtgnESzfrsD3wWo/A0oP+wk4oOFjhRDdVwHzwBDiHPhl43b/lt6omQuxK+xF0BJ77X/VhAoCx5zwIQ1GnmtXmP5xqx8f+e9ceFWNSxBPVKakKx/BveCxF1uOLc7DZUFLDVxRBURiF4BQX/670+FaYF2BWS3XtxfCqxaCz3F177qUev3pYuwpvSIj6WNSmU8uyxvibSzvYtA50gQtznTfteWja14B8AB+rgagz5nEzRzO7u1+QmxbdvEyBKvmWzNtnvsNqee4LhU9sl6rPdyUScmDrCPVLiPhrqY/sBVfxzX6z40suflYFPYU+fE6lApXnpyDB8he25DmnmPYTEsCq9d2uYaYTSBAgeir0qi9Jnjj/mcJ/3sNwwTlh7Tp6ahJlqWEUJ4myGxcHEesgWAeIrqJ6bhHTxP1n+do4ffry4CMcAjoAPAwYY0JUTYANy722LbOgiN+z5KUryC/MYjw/azOHFcpYjsGR60fARG03yVBgNBuD5okkmxtrAGdS4w85UDMAa/dwobUI5bdigFHP0Av6hHQ5uxeaxt1gAO53veGmA8aIOidhtZyHhlv+ANl9VYyZMOdPP1DjBTd8AQTIGR2JglmGzE8/00Ndx736MNdVzxNG0iKOvLlgl3cd1cEjW6hfC47juSDCgZTs9oPeo2mr1qvtak7zVd/yByjP9KHh0mjCi3cZDButaTe/oic4bdf24xQDtahSEJpAf49i9gzIpqxG92pyM7HRaVSvScFmCNnNKLJSDCeYw4+zlU+jawGKPjX6ebFDGFV1gNiPvkZdYd/5UXFwpHt5saj/Lgfoe/BtJWUx53TNkYlTNytflgV/ssFo8k9aYlIq2SDDKeZdlZexeNJOvhr8yntOQzLK6WWVONUgilTFNKX3+NQTmMR1LhA7VSP17+/3NjM0wEaz/JpKRoqMMvrgzl2A/6s019UMoT81hGXNtk9Ed8vxtdeNi1BC+SHWWyazundxXMQ4/gD7PnJXQJduz0QZ8quxRQZZTn+u+t1hKyMQikRKqephJaIQv9NLnKffPncEii9ukfRuLLCy7hPFuAho1Bfgi6rJMN0AxlX9URe6LB6vjLMNdTvWVqCHtBvay4scJg58my00razBF8BhQe7db+UJiv5JwADSJ2fwO/oooReksH3Sv1U4UOx5Y7kK8bbChFg=="; // Public key generated using Noble post-quantum
     const INVALID_ML_DSA_ADDRESS: &str = "invalid_address";
 
@@ -1212,7 +1216,7 @@ mod tests {
         let ml_dsa_address = decode_address(VALID_ML_DSA_ADDRESS).unwrap();
 
         // Expected output
-        let expected_message = "I want to permanently link my Bitcoin address 1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm with my post-quantum address iJeO896MYWHt86o8JRfEGcl6fgInl3WxvTwI5VK1Gl4=";
+        let expected_message = "I want to permanently link my Bitcoin address 1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm with my post-quantum address yp1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hs5cdx7q";
 
         // Call the function
         let result = generate_expected_message(&bitcoin_address, &ml_dsa_address);
@@ -1222,5 +1226,27 @@ mod tests {
             result, expected_message,
             "Generated message should match expected format"
         );
+    }
+
+    #[test]
+    fn generate_and_print_mldsa_address() {
+        // Parse the public key bytes from the existing ML-DSA test public key
+        let ml_dsa_44_pub_key_str = "e+ffcul9XkuQCkiCEYX2ES6KMGJ9c7+Z0PFfhnJRckbaHzh4EH9hcEkUoFZ4gK2ta6/xPzgxB1yTT92wPZw8SmrK3DeLMz9mkst0IWkSzJ/TPPHRcSYJekO+CLV8k7uXsGSSoK4fbLqkX8leQFMCzjzRYg06zb3SD7iQwK3O8dP2WWLa9PkBMl1LECCBtTHrxoqyYtKopNbn3wICOOxI1jjTTL46AZnE6Vw2vQdLB/Qg59Pq6su8P3zEqBbsVPwPpT9ZbBNCHE+puWjdYnOfttj6DZ748CRHibQ9WTkH+VpxssIxU62nsYes/fV85nDozwddZggZoLfRsmSlG1Yz6h4m5hMMu9Nku9myTTw4UCiGSxZmad+yIjl7hh6J3wDaLMDA6SXajLSXTk2RwmnsEUlYs+uXS6Wj5wzg+bLQDQVMkU+doOf4vPTArf4uwzJdZ9Ghp8vjHd+rQgKjuo+Hy+HWz4JgvaQXlln+3yF0eY4/v01Bhe8BwVCbFZX8ts2Ay53gJmZEtsnXw3d5xedAMO9LJt4UqwovnmWCuApzAG9jyvG3Wxxe572E725S4vLtgnESzfrsD3wWo/A0oP+wk4oOFjhRDdVwHzwBDiHPhl43b/lt6omQuxK+xF0BJ77X/VhAoCx5zwIQ1GnmtXmP5xqx8f+e9ceFWNSxBPVKakKx/BveCxF1uOLc7DZUFLDVxRBURiF4BQX/670+FaYF2BWS3XtxfCqxaCz3F177qUev3pYuwpvSIj6WNSmU8uyxvibSzvYtA50gQtznTfteWja14B8AB+rgagz5nEzRzO7u1+QmxbdvEyBKvmWzNtnvsNqee4LhU9sl6rPdyUScmDrCPVLiPhrqY/sBVfxzX6z40suflYFPYU+fE6lApXnpyDB8he25DmnmPYTEsCq9d2uYaYTSBAgeir0qi9Jnjj/mcJ/3sNwwTlh7Tp6ahJlqWEUJ4myGxcHEesgWAeIrqJ6bhHTxP1n+do4ffry4CMcAjoAPAwYY0JUTYANy722LbOgiN+z5KUryC/MYjw/azOHFcpYjsGR60fARG03yVBgNBuD5okkmxtrAGdS4w85UDMAa/dwobUI5bdigFHP0Av6hHQ5uxeaxt1gAO53veGmA8aIOidhtZyHhlv+ANl9VYyZMOdPP1DjBTd8AQTIGR2JglmGzE8/00Ndx736MNdVzxNG0iKOvLlgl3cd1cEjW6hfC47juSDCgZTs9oPeo2mr1qvtak7zVd/yByjP9KHh0mjCi3cZDButaTe/oic4bdf24xQDtahSEJpAf49i9gzIpqxG92pyM7HRaVSvScFmCNnNKLJSDCeYw4+zlU+jawGKPjX6ebFDGFV1gNiPvkZdYd/5UXFwpHt5saj/Lgfoe/BtJWUx53TNkYlTNytflgV/ssFo8k9aYlIq2SDDKeZdlZexeNJOvhr8yntOQzLK6WWVONUgilTFNKX3+NQTmMR1LhA7VSP17+/3NjM0wEaz/JpKRoqMMvrgzl2A/6s019UMoT81hGXNtk9Ed8vxtdeNi1BC+SHWWyazundxXMQ4/gD7PnJXQJduz0QZ8quxRQZZTn+u+t1hKyMQikRKqephJaIQv9NLnKffPncEii9ukfRuLLCy7hPFuAho1Bfgi6rJMN0AxlX9URe6LB6vjLMNdTvWVqCHtBvay4scJg58my00razBF8BhQe7db+UJiv5JwADSJ2fwO/oooReksH3Sv1U4UOx5Y7kK8bbChFg==";
+
+        let pub_key_bytes = base64::decode(ml_dsa_44_pub_key_str).expect("valid base64");
+
+        // Use those to generate an address
+        let params = pq_address::AddressParams {
+            network: pq_address::Network::Testnet,
+            version: pq_address::Version::V1,
+            pubkey_type: pq_address::PubKeyType::MlDsa44,
+            pubkey_bytes: &pub_key_bytes,
+        };
+
+        // Run the encode function to stringify that
+        let address_str = pq_address::encode_address(&params).expect("valid address");
+
+        // Print the result
+        println!("Generated ML-DSA address: {}", address_str);
     }
 }

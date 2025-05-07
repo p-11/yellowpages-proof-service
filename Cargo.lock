@@ -1913,6 +1913,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64",
+ "bech32",
  "bitcoin",
  "ml-dsa",
  "pq_address",
