@@ -12,6 +12,7 @@ use ml_dsa::{
     EncodedVerifyingKey as MlDsaEncodedVerifyingKey, MlDsa44, Signature as MlDsaSignature,
     VerifyingKey as MlDsaVerifyingKey, signature::Verifier,
 };
+use pq_address::{DecodedAddress, decode_address};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -23,7 +24,7 @@ type ValidationResult = Result<
     (
         BitcoinAddress,
         BitcoinMessageSignature,
-        MlDsaAddress,
+        DecodedAddress,
         MlDsaVerifyingKey<MlDsa44>,
         MlDsaSignature<MlDsa44>,
     ),
@@ -64,37 +65,6 @@ struct UploadProofRequest {
     ml_dsa_44_address: String,
     version: String,
     proof: String,
-}
-
-#[derive(Debug)]
-struct MlDsaAddress {
-    public_key_hash: [u8; 32],
-}
-
-impl MlDsaAddress {
-    fn new(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() != 32 {
-            return Err(format!(
-                "Invalid ML-DSA address length: expected 32 bytes, got {}",
-                bytes.len()
-            ));
-        }
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(bytes);
-        Ok(MlDsaAddress {
-            public_key_hash: arr,
-        })
-    }
-}
-
-impl fmt::Display for MlDsaAddress {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            general_purpose::STANDARD.encode(self.public_key_hash)
-        )
-    }
 }
 
 // Macro to handle the common pattern of error checking
@@ -211,6 +181,19 @@ impl Config {
             version,
         })
     }
+}
+
+// Function to encode DecodedAddress to a string
+fn encode_decoded_address(
+    address: &DecodedAddress,
+) -> Result<String, pq_address::AddressEncodeError> {
+    let params = pq_address::AddressParams {
+        network: address.network,
+        version: address.version,
+        pubkey_type: address.pubkey_type,
+        pubkey_bytes: &address.pubkey_hash,
+    };
+    pq_address::encode_address(&params)
 }
 
 #[tokio::main]
@@ -389,15 +372,10 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
         "Failed to parse message signature"
     );
 
-    // Convert the ML-DSA address from base64 to bytes
+    // Convert the ML-DSA address from base64 to DecodedAddress
     let decoded_ml_dsa_address = ok_or_bad_request!(
-        general_purpose::STANDARD.decode(&proof_request.ml_dsa_address),
-        "Failed to decode ML-DSA address base64"
-    );
-
-    let ml_dsa_address = ok_or_bad_request!(
-        MlDsaAddress::new(&decoded_ml_dsa_address),
-        "Invalid ML-DSA address"
+        decode_address(&proof_request.ml_dsa_address),
+        "Failed to decode ML-DSA address"
     );
 
     // Decode ML-DSA signature (should be base64 encoded)
@@ -429,7 +407,7 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
     Ok((
         bitcoin_address,
         bitcoin_signed_message,
-        ml_dsa_address,
+        decoded_ml_dsa_address,
         ml_dsa_public_key,
         ml_dsa_signed_message,
     ))
@@ -437,10 +415,12 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
 
 fn generate_expected_message(
     bitcoin_address: &BitcoinAddress,
-    ml_dsa_address: &MlDsaAddress,
+    ml_dsa_address: &DecodedAddress,
 ) -> String {
+    let ml_dsa_address_str =
+        encode_decoded_address(ml_dsa_address).unwrap_or_else(|_| "Invalid address".to_string());
     format!(
-        "I want to permanently link my Bitcoin address {bitcoin_address} with my post-quantum address {ml_dsa_address}"
+        "I want to permanently link my Bitcoin address {bitcoin_address} with my post-quantum address {ml_dsa_address_str}"
     )
 }
 
@@ -505,7 +485,7 @@ fn verify_bitcoin_ownership(
 }
 
 fn verify_ml_dsa_ownership(
-    address: &MlDsaAddress,
+    address: &DecodedAddress,
     verifying_key: &MlDsaVerifyingKey<MlDsa44>,
     signature: &MlDsaSignature<MlDsa44>,
     expected_message: &str,
@@ -523,7 +503,7 @@ fn verify_ml_dsa_ownership(
     let encoded_key = verifying_key.encode();
     let computed_address = sha256::Hash::hash(&encoded_key[..]).to_byte_array();
 
-    if computed_address == address.public_key_hash {
+    if computed_address == address.pubkey_hash_bytes() {
         println!("ML-DSA address ownership verified: public key hash matches the address");
     } else {
         bad_request!(
@@ -536,14 +516,15 @@ fn verify_ml_dsa_ownership(
 
 async fn embed_addresses_in_proof(
     bitcoin_address: &BitcoinAddress,
-    ml_dsa_address: &MlDsaAddress,
+    ml_dsa_address: &DecodedAddress,
 ) -> Result<String, StatusCode> {
     let client = Client::new();
 
     // Create and encode the user data struct
     let user_data = UserData {
         bitcoin_address: bitcoin_address.to_string(),
-        ml_dsa_44_address: ml_dsa_address.to_string(),
+        ml_dsa_44_address: encode_decoded_address(ml_dsa_address)
+            .unwrap_or_else(|_| "Invalid address".to_string()),
     };
 
     let user_data_base64 = ok_or_internal_error!(user_data.encode(), "Failed to encode user data");
@@ -583,7 +564,7 @@ async fn embed_addresses_in_proof(
 
 async fn upload_to_data_layer(
     bitcoin_address: &BitcoinAddress,
-    ml_dsa_address: &MlDsaAddress,
+    ml_dsa_address: &DecodedAddress,
     attestation_doc_base64: &str,
     version: &str,
     data_layer_url: &str,
@@ -593,7 +574,8 @@ async fn upload_to_data_layer(
 
     let request = UploadProofRequest {
         btc_address: bitcoin_address.to_string(),
-        ml_dsa_44_address: ml_dsa_address.to_string(),
+        ml_dsa_44_address: encode_decoded_address(ml_dsa_address)
+            .unwrap_or_else(|_| "Invalid address".to_string()),
         version: version.to_string(),
         proof: attestation_doc_base64.to_string(),
     };
@@ -626,6 +608,7 @@ mod tests {
     use super::*;
     use axum::{response::IntoResponse, routing::post};
     use ml_dsa::{KeyGen, signature::Signer};
+    use pq_address::{DecodedAddress, decode_address};
     use serial_test::serial;
 
     // Add a constant for our mock attestation document
@@ -937,11 +920,8 @@ mod tests {
         let seed: [u8; 32] = rand::random();
         let keypair = MlDsa44::key_gen_internal(&seed.into());
 
-        // Create the address from the public key
-        let address = MlDsaAddress {
-            public_key_hash: sha256::Hash::hash(&keypair.verifying_key().encode()[..])
-                .to_byte_array(),
-        };
+        // Decode the hardcoded ML-DSA address
+        let address = decode_address(VALID_ML_DSA_ADDRESS).unwrap();
 
         let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
             .unwrap()
@@ -968,11 +948,8 @@ mod tests {
         let keypair = MlDsa44::key_gen_internal(&seed.into());
         let wrong_message = "wrong message";
 
-        // Create the address from the public key
-        let address = MlDsaAddress {
-            public_key_hash: sha256::Hash::hash(&keypair.verifying_key().encode()[..])
-                .to_byte_array(),
-        };
+        // Decode the hardcoded ML-DSA address
+        let address = decode_address(VALID_ML_DSA_ADDRESS).unwrap();
 
         // Sign the wrong message
         let signature = keypair.signing_key().sign(wrong_message.as_bytes());
@@ -1002,11 +979,8 @@ mod tests {
         let keypair1 = MlDsa44::key_gen_internal(&seed1.into());
         let keypair2 = MlDsa44::key_gen_internal(&seed2.into());
 
-        // Create address from second public key
-        let wrong_address = MlDsaAddress {
-            public_key_hash: sha256::Hash::hash(&keypair2.verifying_key().encode()[..])
-                .to_byte_array(),
-        };
+        // Decode the hardcoded ML-DSA address
+        let wrong_address = decode_address(VALID_ML_DSA_ADDRESS).unwrap();
 
         let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
             .unwrap()
@@ -1025,44 +999,6 @@ mod tests {
             result.is_err(),
             "ML-DSA verification should fail with mismatched address"
         );
-    }
-
-    #[test]
-    fn test_ml_dsa_address_new_valid() {
-        let bytes = vec![0u8; 32];
-        let result = MlDsaAddress::new(&bytes);
-        assert!(
-            result.is_ok(),
-            "Should create ML-DSA address from valid bytes"
-        );
-    }
-
-    #[test]
-    fn test_ml_dsa_address_new_invalid_length() {
-        let bytes = vec![0u8; 31]; // Too short
-        let result = MlDsaAddress::new(&bytes);
-        assert!(result.is_err(), "Should fail with wrong length");
-        assert_eq!(
-            result.unwrap_err(),
-            "Invalid ML-DSA address length: expected 32 bytes, got 31"
-        );
-
-        let bytes = vec![0u8; 33]; // Too long
-        let result = MlDsaAddress::new(&bytes);
-        assert!(result.is_err(), "Should fail with wrong length");
-        assert_eq!(
-            result.unwrap_err(),
-            "Invalid ML-DSA address length: expected 32 bytes, got 33"
-        );
-    }
-
-    #[test]
-    fn test_mldsa_address_to_string() {
-        let decoded_ml_dsa_address = general_purpose::STANDARD
-            .decode(VALID_ML_DSA_ADDRESS)
-            .unwrap();
-        let ml_dsa_address = MlDsaAddress::new(&decoded_ml_dsa_address).unwrap();
-        assert_eq!(ml_dsa_address.to_string(), VALID_ML_DSA_ADDRESS);
     }
 
     #[test]
@@ -1273,12 +1209,7 @@ mod tests {
             .unwrap()
             .require_network(Network::Bitcoin)
             .unwrap();
-        let ml_dsa_address = MlDsaAddress::new(
-            &general_purpose::STANDARD
-                .decode(VALID_ML_DSA_ADDRESS)
-                .unwrap(),
-        )
-        .unwrap();
+        let ml_dsa_address = decode_address(VALID_ML_DSA_ADDRESS).unwrap();
 
         // Expected output
         let expected_message = "I want to permanently link my Bitcoin address 1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm with my post-quantum address iJeO896MYWHt86o8JRfEGcl6fgInl3WxvTwI5VK1Gl4=";
