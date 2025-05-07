@@ -590,7 +590,7 @@ mod tests {
     use super::*;
     use axum::{response::IntoResponse, routing::post};
     use ml_dsa::{KeyGen, signature::Signer};
-    use pq_address::{DecodedAddress, decode_address};
+    use pq_address::decode_address;
     use serial_test::serial;
 
     // Add a constant for our mock attestation document
@@ -903,13 +903,11 @@ mod tests {
         let seed: [u8; 32] = rand::random();
         let keypair = MlDsa44::key_gen_internal(&seed.into());
 
-        // Generate a fresh ML-DSA address using the public key
-        let pub_key_bytes = keypair.verifying_key().encode();
         let params = pq_address::AddressParams {
             network: pq_address::Network::Testnet, // Assuming Testnet for test
             version: pq_address::Version::V1,      // Assuming V1 for test
             pubkey_type: pq_address::PubKeyType::MlDsa44, // Assuming MlDsa44 for test
-            pubkey_bytes: &pub_key_bytes,
+            pubkey_bytes: &keypair.verifying_key().encode(),
         };
         let address = pq_address::encode_address(&params).expect("valid address");
         let decoded_address = decode_address(&address).unwrap();
@@ -939,8 +937,14 @@ mod tests {
         let keypair = MlDsa44::key_gen_internal(&seed.into());
         let wrong_message = "wrong message";
 
-        // Decode the hardcoded ML-DSA address
-        let address = decode_address(VALID_ML_DSA_ADDRESS).unwrap();
+        let params = pq_address::AddressParams {
+            network: pq_address::Network::Testnet, // Assuming Testnet for test
+            version: pq_address::Version::V1,      // Assuming V1 for test
+            pubkey_type: pq_address::PubKeyType::MlDsa44, // Assuming MlDsa44 for test
+            pubkey_bytes: &keypair.verifying_key().encode(),
+        };
+        let address = pq_address::encode_address(&params).expect("valid address");
+        let decoded_address = decode_address(&address).unwrap();
 
         // Sign the wrong message
         let signature = keypair.signing_key().sign(wrong_message.as_bytes());
@@ -949,10 +953,10 @@ mod tests {
             .unwrap()
             .require_network(Network::Bitcoin)
             .unwrap();
-        let expected_message = generate_expected_message(&bitcoin_address, &address);
+        let expected_message = generate_expected_message(&bitcoin_address, &decoded_address);
 
         let result = verify_ml_dsa_ownership(
-            &address,
+            &decoded_address,
             keypair.verifying_key(),
             &signature,
             &expected_message,
@@ -970,18 +974,24 @@ mod tests {
         let keypair1 = MlDsa44::key_gen_internal(&seed1.into());
         let keypair2 = MlDsa44::key_gen_internal(&seed2.into());
 
-        // Decode the hardcoded ML-DSA address
-        let wrong_address = decode_address(VALID_ML_DSA_ADDRESS).unwrap();
+        let params = pq_address::AddressParams {
+            network: pq_address::Network::Testnet, // Assuming Testnet for test
+            version: pq_address::Version::V1,      // Assuming V1 for test
+            pubkey_type: pq_address::PubKeyType::MlDsa44, // Assuming MlDsa44 for test
+            pubkey_bytes: &keypair2.verifying_key().encode(),
+        };
+        let wrong_address = pq_address::encode_address(&params).expect("valid address");
+        let decoded_wrong_address = decode_address(&wrong_address).unwrap();
 
         let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
             .unwrap()
             .require_network(Network::Bitcoin)
             .unwrap();
-        let expected_message = generate_expected_message(&bitcoin_address, &wrong_address);
+        let expected_message = generate_expected_message(&bitcoin_address, &decoded_wrong_address);
         let signature = keypair1.signing_key().sign(expected_message.as_bytes());
 
         let result = verify_ml_dsa_ownership(
-            &wrong_address,
+            &decoded_wrong_address,
             keypair1.verifying_key(),
             &signature,
             &expected_message,
@@ -1213,27 +1223,5 @@ mod tests {
             result, expected_message,
             "Generated message should match expected format"
         );
-    }
-
-    #[test]
-    fn generate_and_print_mldsa_address() {
-        // Parse the public key bytes from the existing ML-DSA test public key
-        let ml_dsa_44_pub_key_str = "e+ffcul9XkuQCkiCEYX2ES6KMGJ9c7+Z0PFfhnJRckbaHzh4EH9hcEkUoFZ4gK2ta6/xPzgxB1yTT92wPZw8SmrK3DeLMz9mkst0IWkSzJ/TPPHRcSYJekO+CLV8k7uXsGSSoK4fbLqkX8leQFMCzjzRYg06zb3SD7iQwK3O8dP2WWLa9PkBMl1LECCBtTHrxoqyYtKopNbn3wICOOxI1jjTTL46AZnE6Vw2vQdLB/Qg59Pq6su8P3zEqBbsVPwPpT9ZbBNCHE+puWjdYnOfttj6DZ748CRHibQ9WTkH+VpxssIxU62nsYes/fV85nDozwddZggZoLfRsmSlG1Yz6h4m5hMMu9Nku9myTTw4UCiGSxZmad+yIjl7hh6J3wDaLMDA6SXajLSXTk2RwmnsEUlYs+uXS6Wj5wzg+bLQDQVMkU+doOf4vPTArf4uwzJdZ9Ghp8vjHd+rQgKjuo+Hy+HWz4JgvaQXlln+3yF0eY4/v01Bhe8BwVCbFZX8ts2Ay53gJmZEtsnXw3d5xedAMO9LJt4UqwovnmWCuApzAG9jyvG3Wxxe572E725S4vLtgnESzfrsD3wWo/A0oP+wk4oOFjhRDdVwHzwBDiHPhl43b/lt6omQuxK+xF0BJ77X/VhAoCx5zwIQ1GnmtXmP5xqx8f+e9ceFWNSxBPVKakKx/BveCxF1uOLc7DZUFLDVxRBURiF4BQX/670+FaYF2BWS3XtxfCqxaCz3F177qUev3pYuwpvSIj6WNSmU8uyxvibSzvYtA50gQtznTfteWja14B8AB+rgagz5nEzRzO7u1+QmxbdvEyBKvmWzNtnvsNqee4LhU9sl6rPdyUScmDrCPVLiPhrqY/sBVfxzX6z40suflYFPYU+fE6lApXnpyDB8he25DmnmPYTEsCq9d2uYaYTSBAgeir0qi9Jnjj/mcJ/3sNwwTlh7Tp6ahJlqWEUJ4myGxcHEesgWAeIrqJ6bhHTxP1n+do4ffry4CMcAjoAPAwYY0JUTYANy722LbOgiN+z5KUryC/MYjw/azOHFcpYjsGR60fARG03yVBgNBuD5okkmxtrAGdS4w85UDMAa/dwobUI5bdigFHP0Av6hHQ5uxeaxt1gAO53veGmA8aIOidhtZyHhlv+ANl9VYyZMOdPP1DjBTd8AQTIGR2JglmGzE8/00Ndx736MNdVzxNG0iKOvLlgl3cd1cEjW6hfC47juSDCgZTs9oPeo2mr1qvtak7zVd/yByjP9KHh0mjCi3cZDButaTe/oic4bdf24xQDtahSEJpAf49i9gzIpqxG92pyM7HRaVSvScFmCNnNKLJSDCeYw4+zlU+jawGKPjX6ebFDGFV1gNiPvkZdYd/5UXFwpHt5saj/Lgfoe/BtJWUx53TNkYlTNytflgV/ssFo8k9aYlIq2SDDKeZdlZexeNJOvhr8yntOQzLK6WWVONUgilTFNKX3+NQTmMR1LhA7VSP17+/3NjM0wEaz/JpKRoqMMvrgzl2A/6s019UMoT81hGXNtk9Ed8vxtdeNi1BC+SHWWyazundxXMQ4/gD7PnJXQJduz0QZ8quxRQZZTn+u+t1hKyMQikRKqephJaIQv9NLnKffPncEii9ukfRuLLCy7hPFuAho1Bfgi6rJMN0AxlX9URe6LB6vjLMNdTvWVqCHtBvay4scJg58my00razBF8BhQe7db+UJiv5JwADSJ2fwO/oooReksH3Sv1U4UOx5Y7kK8bbChFg==";
-
-        let pub_key_bytes = base64::decode(ml_dsa_44_pub_key_str).expect("valid base64");
-
-        // Use those to generate an address
-        let params = pq_address::AddressParams {
-            network: pq_address::Network::Testnet,
-            version: pq_address::Version::V1,
-            pubkey_type: pq_address::PubKeyType::MlDsa44,
-            pubkey_bytes: &pub_key_bytes,
-        };
-
-        // Run the encode function to stringify that
-        let address_str = pq_address::encode_address(&params).expect("valid address");
-
-        // Print the result
-        println!("Generated ML-DSA address: {}", address_str);
     }
 }
