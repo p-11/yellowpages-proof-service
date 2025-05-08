@@ -13,7 +13,7 @@ use ml_dsa::{
     VerifyingKey as MlDsaVerifyingKey, signature::Verifier,
 };
 use pq_address::{
-    DecodedAddress as PqDecodedAddress, Network as PqNetwork, PubKeyType as PqPubKeyType,
+    DecodedAddress as PqDecodedAddress, PubKeyType as PqPubKeyType,
     decode_address as pq_decode_address,
 };
 use reqwest::Client;
@@ -367,14 +367,6 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
         "Failed to decode ML-DSA address"
     );
 
-    // Check if the ML-DSA address is a MainNet network address
-    if decoded_ml_dsa_address.network != PqNetwork::Mainnet {
-        bad_request!(
-            "ML-DSA address must be a MainNet network address, got {:?}",
-            decoded_ml_dsa_address.network
-        );
-    }
-
     // Check if the address is an ML-DSA address
     if decoded_ml_dsa_address.pubkey_type != PqPubKeyType::MlDsa44 {
         bad_request!(
@@ -610,7 +602,8 @@ mod tests {
     use axum::{response::IntoResponse, routing::post};
     use ml_dsa::{KeyGen, signature::Signer};
     use pq_address::{
-        AddressParams as PqAddressParams, Version as PqVersion, encode_address as pq_encode_address,
+        AddressParams as PqAddressParams, Network as PqNetwork, Version as PqVersion,
+        encode_address as pq_encode_address,
     };
     use serial_test::serial;
 
