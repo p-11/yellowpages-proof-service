@@ -13,8 +13,8 @@ use ml_dsa::{
     VerifyingKey as MlDsaVerifyingKey, signature::Verifier,
 };
 use pq_address::{
-    DecodedAddress as PqDecodedAddress, PubKeyType as PqPubKeyType,
-    decode_address as pq_decode_address,
+    DecodedAddress as DecodedPqAddress, PubKeyType as PqPubKeyType,
+    decode_address as decode_pq_address,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,7 @@ type ValidationResult = Result<
     (
         BitcoinAddress,
         BitcoinMessageSignature,
-        PqDecodedAddress,
+        DecodedPqAddress,
         MlDsaVerifyingKey<MlDsa44>,
         MlDsaSignature<MlDsa44>,
     ),
@@ -363,7 +363,7 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
 
     // Convert the ML-DSA address from base64 to DecodedAddress
     let decoded_ml_dsa_address = ok_or_bad_request!(
-        pq_decode_address(&proof_request.ml_dsa_address),
+        decode_pq_address(&proof_request.ml_dsa_address),
         "Failed to decode ML-DSA address"
     );
 
@@ -412,7 +412,7 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
 
 fn generate_expected_message(
     bitcoin_address: &BitcoinAddress,
-    ml_dsa_address: &PqDecodedAddress,
+    ml_dsa_address: &DecodedPqAddress,
 ) -> String {
     format!(
         "I want to permanently link my Bitcoin address {bitcoin_address} with my post-quantum address {ml_dsa_address}"
@@ -480,7 +480,7 @@ fn verify_bitcoin_ownership(
 }
 
 fn verify_ml_dsa_ownership(
-    address: &PqDecodedAddress,
+    address: &DecodedPqAddress,
     verifying_key: &MlDsaVerifyingKey<MlDsa44>,
     signature: &MlDsaSignature<MlDsa44>,
     expected_message: &str,
@@ -511,7 +511,7 @@ fn verify_ml_dsa_ownership(
 
 async fn embed_addresses_in_proof(
     bitcoin_address: &BitcoinAddress,
-    ml_dsa_address: &PqDecodedAddress,
+    ml_dsa_address: &DecodedPqAddress,
 ) -> Result<String, StatusCode> {
     let client = Client::new();
 
@@ -558,7 +558,7 @@ async fn embed_addresses_in_proof(
 
 async fn upload_to_data_layer(
     bitcoin_address: &BitcoinAddress,
-    ml_dsa_address: &PqDecodedAddress,
+    ml_dsa_address: &DecodedPqAddress,
     attestation_doc_base64: &str,
     version: &str,
     data_layer_url: &str,
@@ -924,7 +924,7 @@ mod tests {
             pubkey_bytes: &keypair.verifying_key().encode(),
         };
         let address = pq_encode_address(&params).expect("valid address");
-        let decoded_address = pq_decode_address(&address).unwrap();
+        let decoded_address = decode_pq_address(&address).unwrap();
 
         let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
             .unwrap()
@@ -958,7 +958,7 @@ mod tests {
             pubkey_bytes: &keypair.verifying_key().encode(),
         };
         let address = pq_encode_address(&params).expect("valid address");
-        let decoded_address = pq_decode_address(&address).unwrap();
+        let decoded_address = decode_pq_address(&address).unwrap();
 
         // Sign the wrong message
         let signature = keypair.signing_key().sign(wrong_message.as_bytes());
@@ -995,7 +995,7 @@ mod tests {
             pubkey_bytes: &keypair2.verifying_key().encode(),
         };
         let wrong_address = pq_encode_address(&params).expect("valid address");
-        let decoded_wrong_address = pq_decode_address(&wrong_address).unwrap();
+        let decoded_wrong_address = decode_pq_address(&wrong_address).unwrap();
 
         let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
             .unwrap()
@@ -1224,7 +1224,7 @@ mod tests {
             .unwrap()
             .require_network(Network::Bitcoin)
             .unwrap();
-        let ml_dsa_address = pq_decode_address(VALID_ML_DSA_ADDRESS).unwrap();
+        let ml_dsa_address = decode_pq_address(VALID_ML_DSA_ADDRESS).unwrap();
 
         // Expected output
         let expected_message = "I want to permanently link my Bitcoin address 1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm with my post-quantum address yp1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hs5cdx7q";
