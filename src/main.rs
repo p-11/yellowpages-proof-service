@@ -224,7 +224,12 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-// handler for /health
+/// Health check endpoint.
+///
+/// This endpoint is used to verify that the process is running and operational.
+/// It returns a JSON object with the following structure:
+/// - `status`: A string indicating the health status of the server (e.g., "ok").
+/// - `version`: A string representing the current version of the application.
 async fn health(State(config): State<Config>) -> Json<serde_json::Value> {
     let body = json!({
         "status": "ok",
