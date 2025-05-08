@@ -372,6 +372,14 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
         );
     }
 
+    // Check if the address is an ML-DSA address
+    if decoded_ml_dsa_address.pubkey_type != pq_address::PubKeyType::MlDsa44 {
+        bad_request!(
+            "Address must use ML-DSA-44 public key type, got {:?}",
+            decoded_ml_dsa_address.pubkey_type
+        );
+    }
+
     // Decode ML-DSA signature (should be base64 encoded)
     let ml_dsa_signed_message_bytes = ok_or_bad_request!(
         general_purpose::STANDARD.decode(&proof_request.ml_dsa_signed_message),
