@@ -12,7 +12,10 @@ use ml_dsa::{
     EncodedVerifyingKey as MlDsaEncodedVerifyingKey, MlDsa44, Signature as MlDsaSignature,
     VerifyingKey as MlDsaVerifyingKey, signature::Verifier,
 };
-use pq_address::{DecodedAddress, decode_address};
+use pq_address::{
+    DecodedAddress as PqDecodedAddress, Network as PqNetwork, PubKeyType as PqPubKeyType,
+    decode_address as pq_decode_address,
+};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -23,7 +26,7 @@ type ValidationResult = Result<
     (
         BitcoinAddress,
         BitcoinMessageSignature,
-        DecodedAddress,
+        PqDecodedAddress,
         MlDsaVerifyingKey<MlDsa44>,
         MlDsaSignature<MlDsa44>,
     ),
@@ -360,12 +363,12 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
 
     // Convert the ML-DSA address from base64 to DecodedAddress
     let decoded_ml_dsa_address = ok_or_bad_request!(
-        decode_address(&proof_request.ml_dsa_address),
+        pq_decode_address(&proof_request.ml_dsa_address),
         "Failed to decode ML-DSA address"
     );
 
     // Check if the ML-DSA address is a MainNet network address
-    if decoded_ml_dsa_address.network != pq_address::Network::Mainnet {
+    if decoded_ml_dsa_address.network != PqNetwork::Mainnet {
         bad_request!(
             "ML-DSA address must be a MainNet network address, got {:?}",
             decoded_ml_dsa_address.network
@@ -373,7 +376,7 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
     }
 
     // Check if the address is an ML-DSA address
-    if decoded_ml_dsa_address.pubkey_type != pq_address::PubKeyType::MlDsa44 {
+    if decoded_ml_dsa_address.pubkey_type != PqPubKeyType::MlDsa44 {
         bad_request!(
             "Address must use ML-DSA-44 public key type, got {:?}",
             decoded_ml_dsa_address.pubkey_type
@@ -417,7 +420,7 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
 
 fn generate_expected_message(
     bitcoin_address: &BitcoinAddress,
-    ml_dsa_address: &DecodedAddress,
+    ml_dsa_address: &PqDecodedAddress,
 ) -> String {
     format!(
         "I want to permanently link my Bitcoin address {bitcoin_address} with my post-quantum address {ml_dsa_address}"
@@ -485,7 +488,7 @@ fn verify_bitcoin_ownership(
 }
 
 fn verify_ml_dsa_ownership(
-    address: &DecodedAddress,
+    address: &PqDecodedAddress,
     verifying_key: &MlDsaVerifyingKey<MlDsa44>,
     signature: &MlDsaSignature<MlDsa44>,
     expected_message: &str,
@@ -516,7 +519,7 @@ fn verify_ml_dsa_ownership(
 
 async fn embed_addresses_in_proof(
     bitcoin_address: &BitcoinAddress,
-    ml_dsa_address: &DecodedAddress,
+    ml_dsa_address: &PqDecodedAddress,
 ) -> Result<String, StatusCode> {
     let client = Client::new();
 
@@ -563,7 +566,7 @@ async fn embed_addresses_in_proof(
 
 async fn upload_to_data_layer(
     bitcoin_address: &BitcoinAddress,
-    ml_dsa_address: &DecodedAddress,
+    ml_dsa_address: &PqDecodedAddress,
     attestation_doc_base64: &str,
     version: &str,
     data_layer_url: &str,
@@ -606,7 +609,9 @@ mod tests {
     use super::*;
     use axum::{response::IntoResponse, routing::post};
     use ml_dsa::{KeyGen, signature::Signer};
-    use pq_address::decode_address;
+    use pq_address::{
+        AddressParams as PqAddressParams, Version as PqVersion, encode_address as pq_encode_address,
+    };
     use serial_test::serial;
 
     // Add a constant for our mock attestation document
@@ -919,14 +924,14 @@ mod tests {
         let seed: [u8; 32] = rand::random();
         let keypair = MlDsa44::key_gen_internal(&seed.into());
 
-        let params = pq_address::AddressParams {
-            network: pq_address::Network::Testnet, // Assuming Testnet for test
-            version: pq_address::Version::V1,      // Assuming V1 for test
-            pubkey_type: pq_address::PubKeyType::MlDsa44, // Assuming MlDsa44 for test
+        let params = PqAddressParams {
+            network: PqNetwork::Testnet,        // Assuming Testnet for test
+            version: PqVersion::V1,             // Assuming V1 for test
+            pubkey_type: PqPubKeyType::MlDsa44, // Assuming MlDsa44 for test
             pubkey_bytes: &keypair.verifying_key().encode(),
         };
-        let address = pq_address::encode_address(&params).expect("valid address");
-        let decoded_address = decode_address(&address).unwrap();
+        let address = pq_encode_address(&params).expect("valid address");
+        let decoded_address = pq_decode_address(&address).unwrap();
 
         let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
             .unwrap()
@@ -953,14 +958,14 @@ mod tests {
         let keypair = MlDsa44::key_gen_internal(&seed.into());
         let wrong_message = "wrong message";
 
-        let params = pq_address::AddressParams {
-            network: pq_address::Network::Testnet, // Assuming Testnet for test
-            version: pq_address::Version::V1,      // Assuming V1 for test
-            pubkey_type: pq_address::PubKeyType::MlDsa44, // Assuming MlDsa44 for test
+        let params = PqAddressParams {
+            network: PqNetwork::Testnet,        // Assuming Testnet for test
+            version: PqVersion::V1,             // Assuming V1 for test
+            pubkey_type: PqPubKeyType::MlDsa44, // Assuming MlDsa44 for test
             pubkey_bytes: &keypair.verifying_key().encode(),
         };
-        let address = pq_address::encode_address(&params).expect("valid address");
-        let decoded_address = decode_address(&address).unwrap();
+        let address = pq_encode_address(&params).expect("valid address");
+        let decoded_address = pq_decode_address(&address).unwrap();
 
         // Sign the wrong message
         let signature = keypair.signing_key().sign(wrong_message.as_bytes());
@@ -990,14 +995,14 @@ mod tests {
         let keypair1 = MlDsa44::key_gen_internal(&seed1.into());
         let keypair2 = MlDsa44::key_gen_internal(&seed2.into());
 
-        let params = pq_address::AddressParams {
-            network: pq_address::Network::Testnet, // Assuming Testnet for test
-            version: pq_address::Version::V1,      // Assuming V1 for test
-            pubkey_type: pq_address::PubKeyType::MlDsa44, // Assuming MlDsa44 for test
+        let params = PqAddressParams {
+            network: PqNetwork::Testnet,        // Assuming Testnet for test
+            version: PqVersion::V1,             // Assuming V1 for test
+            pubkey_type: PqPubKeyType::MlDsa44, // Assuming MlDsa44 for test
             pubkey_bytes: &keypair2.verifying_key().encode(),
         };
-        let wrong_address = pq_address::encode_address(&params).expect("valid address");
-        let decoded_wrong_address = decode_address(&wrong_address).unwrap();
+        let wrong_address = pq_encode_address(&params).expect("valid address");
+        let decoded_wrong_address = pq_decode_address(&wrong_address).unwrap();
 
         let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
             .unwrap()
@@ -1226,7 +1231,7 @@ mod tests {
             .unwrap()
             .require_network(Network::Bitcoin)
             .unwrap();
-        let ml_dsa_address = decode_address(VALID_ML_DSA_ADDRESS).unwrap();
+        let ml_dsa_address = pq_decode_address(VALID_ML_DSA_ADDRESS).unwrap();
 
         // Expected output
         let expected_message = "I want to permanently link my Bitcoin address 1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm with my post-quantum address yp1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hs5cdx7q";
