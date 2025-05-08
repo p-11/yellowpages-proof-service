@@ -298,9 +298,9 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
         );
     }
 
-    if proof_request.ml_dsa_address.len() > 100 {
+    if proof_request.ml_dsa_address.len() != 64 {
         bad_request!(
-            "ML-DSA address is too long: {}",
+            "ML-DSA address must be 64 bytes long, got {}",
             proof_request.ml_dsa_address.len()
         );
     }
@@ -363,6 +363,14 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
         decode_address(&proof_request.ml_dsa_address),
         "Failed to decode ML-DSA address"
     );
+
+    // Check if the ML-DSA address is a MainNet network address
+    if decoded_ml_dsa_address.network != pq_address::Network::Mainnet {
+        bad_request!(
+            "ML-DSA address must be a MainNet network address, got {:?}",
+            decoded_ml_dsa_address.network
+        );
+    }
 
     // Decode ML-DSA signature (should be base64 encoded)
     let ml_dsa_signed_message_bytes = ok_or_bad_request!(
