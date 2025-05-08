@@ -15,6 +15,9 @@ debug = ${ENCLAVE_DEBUG}
 enabled = true
 destinations = ["${YP_DS_API_URL}"]
 
+[healthcheck]
+path = "/health"
+
 
 [signing]
 certPath = "./cert.pem"

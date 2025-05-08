@@ -1,7 +1,8 @@
 use axum::{
     Json, Router,
+    extract::State,
     http::{Method, StatusCode, header},
-    routing::post,
+    routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose};
 use bitcoin::hashes::{Hash, sha256};
@@ -18,6 +19,7 @@ use pq_address::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::env;
 use std::str::FromStr;
 use tower_http::cors::{Any, CorsLayer};
@@ -210,7 +212,9 @@ async fn main() {
 
     // build our application with routes and CORS
     let app = Router::new()
-        .route("/prove", post(move |req| prove(req, config.clone())))
+        .route("/prove", post(prove))
+        .route("/health", get(health))
+        .with_state(config)
         .layer(cors);
 
     println!("Server running on http://0.0.0.0:8008");
@@ -220,7 +224,19 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn prove(Json(proof_request): Json<ProofRequest>, config: Config) -> StatusCode {
+// handler for /health
+async fn health(State(config): State<Config>) -> Json<serde_json::Value> {
+    let body = json!({
+        "status": "ok",
+        "version": config.version,
+    });
+    Json(body)
+}
+
+async fn prove(
+    State(config): State<Config>,
+    Json(proof_request): Json<ProofRequest>,
+) -> StatusCode {
     // Log the received data
     println!(
         "Received proof request - Bitcoin Address: {}, ML-DSA Address: {}",
@@ -1070,6 +1086,19 @@ mod tests {
         assert!(Config::sanity_check_api_key("").is_err());
     }
 
+    #[tokio::test]
+    async fn test_healthcheck_function() {
+        const TEST_VERSION: &str = "1.1.0";
+        let body = health(State(Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: TEST_VERSION.to_string(),
+        }))
+        .await;
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["version"], TEST_VERSION);
+    }
+
     async fn run_end_to_end_test(
         bitcoin_address: &str,
         bitcoin_signed_message: &str,
@@ -1137,12 +1166,12 @@ mod tests {
 
         // Call the main function with the request
         Box::pin(prove(
-            Json(proof_request),
-            Config {
+            State(Config {
                 data_layer_url: "http://127.0.0.1:9998".to_string(),
                 data_layer_api_key: "mock_api_key".to_string(),
                 version: TEST_VERSION.to_string(),
-            },
+            }),
+            Json(proof_request),
         ))
         .await
     }
