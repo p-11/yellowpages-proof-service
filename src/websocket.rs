@@ -4,9 +4,10 @@ use axum::{
     response::IntoResponse,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use crate::{Config, Json, ProofRequest, WsCloseCode, prove};
+// Import the macros directly from the crate root
+use crate::{bad_request, ok_or_bad_request, ok_or_internal_error};
 
 /// Message sent by client to initiate handshake
 #[derive(Deserialize)]
@@ -73,12 +74,15 @@ async fn send_handshake_ack(socket: &mut WebSocket) -> Result<(), WsCloseCode> {
         message: "ack".to_string(),
     };
 
-    let json = serde_json::to_string(&response).map_err(|_| close_code::ERROR)?;
+    let json = ok_or_internal_error!(
+        serde_json::to_string(&response),
+        "Failed to serialize handshake acknowledgment"
+    );
 
-    socket
-        .send(WsMessage::Text(json.into()))
-        .await
-        .map_err(|_| close_code::ERROR)?;
+    ok_or_internal_error!(
+        socket.send(WsMessage::Text(json.into())).await,
+        "Failed to send handshake acknowledgment"
+    );
 
     Ok(())
 }
@@ -86,21 +90,30 @@ async fn send_handshake_ack(socket: &mut WebSocket) -> Result<(), WsCloseCode> {
 /// Performs the initial WebSocket handshake
 async fn perform_handshake(socket: &mut WebSocket) -> Result<(), WsCloseCode> {
     // Wait for message
-    let msg = socket.recv().await.ok_or(close_code::PROTOCOL)?;
+    let msg = match socket.recv().await {
+        Some(msg) => msg,
+        None => {
+            bad_request!("No handshake message received, client disconnected");
+        }
+    };
 
     // Ensure message is valid
     let text = match msg {
         Ok(WsMessage::Text(text)) => text,
-        _ => return Err(close_code::UNSUPPORTED),
+        _ => {
+            bad_request!("Expected text message for handshake, got something else");
+        }
     };
 
     // Parse handshake message
-    let handshake: HandshakeMessage =
-        serde_json::from_str(&text).map_err(|_| close_code::POLICY)?;
+    let handshake: HandshakeMessage = ok_or_bad_request!(
+        serde_json::from_str(&text),
+        "Failed to parse handshake message JSON"
+    );
 
     // Validate handshake content
     if handshake.message != "hello" {
-        return Err(close_code::POLICY);
+        bad_request!("Invalid handshake message content: expected 'hello'");
     }
 
     println!("Received valid handshake message");
@@ -114,16 +127,26 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<(), WsCloseCode> {
 /// Receives and validates a proof request from the WebSocket
 async fn receive_proof_request(socket: &mut WebSocket) -> Result<ProofRequest, WsCloseCode> {
     // Wait for message
-    let msg = socket.recv().await.ok_or(close_code::PROTOCOL)?;
+    let msg = match socket.recv().await {
+        Some(msg) => msg,
+        None => {
+            bad_request!("No proof request received, client disconnected");
+        }
+    };
 
     // Ensure message is valid
     let text = match msg {
         Ok(WsMessage::Text(text)) => text,
-        _ => return Err(close_code::UNSUPPORTED),
+        _ => {
+            bad_request!("Expected text message for proof request, got something else");
+        }
     };
 
     // Parse proof request
-    let proof_request = serde_json::from_str(&text).map_err(|_| close_code::INVALID)?;
+    let proof_request = ok_or_bad_request!(
+        serde_json::from_str(&text),
+        "Failed to parse proof request JSON"
+    );
 
     Ok(proof_request)
 }

@@ -79,6 +79,7 @@ struct UploadProofRequest {
 }
 
 // Macro to handle the common pattern of error checking
+#[macro_export]
 macro_rules! ok_or_bad_request {
     ($expr:expr, $err_msg:expr) => {
         match $expr {
@@ -92,6 +93,7 @@ macro_rules! ok_or_bad_request {
 }
 
 // Macro for simple error logging and returning INVALID code
+#[macro_export]
 macro_rules! bad_request {
     ($err_msg:expr) => {{
         eprintln!($err_msg);
@@ -104,6 +106,7 @@ macro_rules! bad_request {
 }
 
 // Macro for simple error logging and returning ERROR code
+#[macro_export]
 macro_rules! internal_error {
     ($err_msg:expr) => {{
         eprintln!($err_msg);
@@ -116,6 +119,7 @@ macro_rules! internal_error {
 }
 
 // Macro for handling Results that should return ERROR if Err
+#[macro_export]
 macro_rules! ok_or_internal_error {
     ($expr:expr, $err_msg:expr) => {
         match $expr {
