@@ -228,7 +228,7 @@ async fn main() {
     // build our application with routes and CORS
     let app = Router::new()
         .route("/health", get(health))
-        .route("/ws", get(websocket::ws_handler))
+        .route("/ws", get(websocket::handle_ws_upgrade))
         .with_state(config)
         .layer(cors);
 
