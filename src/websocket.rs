@@ -4,10 +4,33 @@ use axum::{
     response::IntoResponse,
 };
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use tokio::time::timeout;
 
 use crate::{Config, Json, ProofRequest, WsCloseCode, prove};
 // Import the macros directly from the crate root
 use crate::{bad_request, ok_or_bad_request, ok_or_internal_error};
+
+// Constants for timeouts
+const HANDSHAKE_TIMEOUT_SECS: u64 = 30; // 30 seconds for initial handshake
+const PROOF_REQUEST_TIMEOUT_SECS: u64 = 30; // 30 seconds for proof submission
+
+// Macro to handle WebSocket timeout
+macro_rules! with_timeout {
+    ($timeout_secs:expr, $operation:expr, $timeout_name:expr) => {
+        match timeout(Duration::from_secs($timeout_secs), $operation).await {
+            Ok(result) => result,
+            Err(_) => {
+                // Timeout occurred - protocol violation
+                eprintln!(
+                    "{} timed out after {} seconds",
+                    $timeout_name, $timeout_secs
+                );
+                return Err(close_code::PROTOCOL);
+            }
+        }
+    };
+}
 
 /// Message sent by client to initiate handshake
 #[derive(Deserialize)]
@@ -59,8 +82,11 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
 
 /// Performs the initial WebSocket handshake
 async fn perform_handshake(socket: &mut WebSocket) -> Result<(), WsCloseCode> {
-    // Wait for message
-    let received_message = match socket.recv().await {
+    // Wait for message with a timeout
+    let receive_result = with_timeout!(HANDSHAKE_TIMEOUT_SECS, socket.recv(), "Handshake message");
+
+    // Handle the result of the receive operation
+    let received_message = match receive_result {
         Some(message) => message,
         None => {
             bad_request!("No handshake message received, client disconnected");
@@ -107,8 +133,11 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<(), WsCloseCode> {
 
 /// Receives and validates a proof request from the WebSocket
 async fn receive_proof_request(socket: &mut WebSocket) -> Result<ProofRequest, WsCloseCode> {
-    // Wait for message
-    let received_message = match socket.recv().await {
+    // Wait for message with a timeout
+    let receive_result = with_timeout!(PROOF_REQUEST_TIMEOUT_SECS, socket.recv(), "Proof request");
+
+    // Handle the result of the receive operation
+    let received_message = match receive_result {
         Some(message) => message,
         None => {
             bad_request!("No proof request received, client disconnected");
