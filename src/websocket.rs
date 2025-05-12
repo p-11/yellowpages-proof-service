@@ -6,7 +6,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{Config, Json, StatusCode, prove};
+use crate::{Config, Json, WsCloseCode, prove};
 
 /// Message sent by client to initiate handshake
 #[derive(Deserialize)]
@@ -21,7 +21,7 @@ pub struct HandshakeResponse {
 }
 
 /// Helper type for WebSocket handshake errors
-type HandshakeError = (String, u16);
+type HandshakeError = (String, WsCloseCode);
 
 /// WebSocket handler that implements a stateful handshake followed by proof verification
 pub async fn ws_handler(State(config): State<Config>, ws: WebSocketUpgrade) -> impl IntoResponse {
@@ -47,7 +47,7 @@ async fn handle_protocol(mut socket: WebSocket, config: Config) {
 }
 
 /// Helper function to send an error message and properly close the WebSocket connection
-async fn send_error_and_close(socket: &mut WebSocket, error: &str, close_code: u16) {
+async fn send_error_and_close(socket: &mut WebSocket, error: &str, close_code: WsCloseCode) {
     eprintln!("WebSocket error: {} (code: {})", error, close_code);
 
     let close_frame = CloseFrame {
@@ -85,10 +85,10 @@ async fn send_handshake_ack(socket: &mut WebSocket) -> Result<(), HandshakeError
 /// Helper function to send a status response
 async fn send_status_response(
     socket: &mut WebSocket,
-    status: StatusCode,
+    status_code: WsCloseCode,
 ) -> Result<(), HandshakeError> {
     let response = json!({
-        "status": status.as_u16()
+        "status": status_code
     });
 
     let json = serde_json::to_string(&response)
@@ -162,11 +162,25 @@ async fn handle_proof_request(
         )
     })?;
 
-    // Process the proof request
-    let status = prove(State(config), Json(proof_request)).await;
+    // Process the proof request - it now returns a WebSocket close code directly
+    let close_code = prove(State(config), Json(proof_request)).await;
 
-    // Send the status response
-    send_status_response(socket, status).await?;
+    // If the close code is not NORMAL (1000), return an error with the code
+    if close_code != close_code::NORMAL {
+        let error_message = match close_code {
+            code if code == close_code::INVALID => "Invalid request",
+            code if code == close_code::PROTOCOL => "Protocol error",
+            code if code == close_code::UNSUPPORTED => "Unsupported data",
+            code if code == close_code::POLICY => "Policy violation",
+            code if code == close_code::ERROR => "Internal error",
+            _ => "Verification failed",
+        };
+
+        return Err((error_message.to_string(), close_code));
+    }
+
+    // Send the status response for success case
+    send_status_response(socket, close_code).await?;
 
     Ok(())
 }

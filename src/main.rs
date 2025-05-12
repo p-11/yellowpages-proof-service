@@ -4,8 +4,9 @@ mod websocket;
 use axum::{
     Json, Router,
     extract::State,
-    http::{Method, StatusCode, header},
-    routing::{get, post},
+    extract::ws::close_code,
+    http::{Method, header},
+    routing::get,
 };
 use base64::{Engine, engine::general_purpose};
 use bitcoin::hashes::{Hash, sha256};
@@ -27,6 +28,9 @@ use std::env;
 use std::str::FromStr;
 use tower_http::cors::{Any, CorsLayer};
 
+/// Type alias for WebSocket close codes
+pub type WsCloseCode = u16;
+
 type ValidationResult = Result<
     (
         BitcoinAddress,
@@ -35,7 +39,7 @@ type ValidationResult = Result<
         MlDsaVerifyingKey<MlDsa44>,
         MlDsaSignature<MlDsa44>,
     ),
-    StatusCode,
+    WsCloseCode,
 >;
 
 #[derive(Serialize, Deserialize)]
@@ -81,44 +85,44 @@ macro_rules! ok_or_bad_request {
             Ok(val) => val,
             Err(e) => {
                 eprintln!("{}: {}", $err_msg, e);
-                return Err(StatusCode::BAD_REQUEST);
+                return Err(close_code::INVALID);
             }
         }
     };
 }
 
-// Macro for simple error logging and returning BAD_REQUEST
+// Macro for simple error logging and returning INVALID code
 macro_rules! bad_request {
     ($err_msg:expr) => {{
         eprintln!($err_msg);
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(close_code::INVALID);
     }};
     ($fmt:expr, $($arg:tt)*) => {{
         eprintln!($fmt, $($arg)*);
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(close_code::INVALID);
     }};
 }
 
-// Macro for simple error logging and returning INTERNAL_SERVER_ERROR
+// Macro for simple error logging and returning ERROR code
 macro_rules! internal_error {
     ($err_msg:expr) => {{
         eprintln!($err_msg);
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        return Err(close_code::ERROR);
     }};
     ($fmt:expr, $($arg:tt)*) => {{
         eprintln!($fmt, $($arg)*);
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        return Err(close_code::ERROR);
     }};
 }
 
-// Macro for handling Results that should return INTERNAL_SERVER_ERROR if Err
+// Macro for handling Results that should return ERROR if Err
 macro_rules! ok_or_internal_error {
     ($expr:expr, $err_msg:expr) => {
         match $expr {
             Ok(val) => val,
             Err(e) => {
                 eprintln!("{}: {}", $err_msg, e);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                return Err(close_code::ERROR);
             }
         }
     };
@@ -219,7 +223,6 @@ async fn main() {
 
     // build our application with routes and CORS
     let app = Router::new()
-        .route("/prove", post(prove))
         .route("/health", get(health))
         .route("/ws", get(websocket::ws_handler))
         .with_state(config)
@@ -259,7 +262,7 @@ async fn health(State(config): State<Config>) -> Json<serde_json::Value> {
 async fn prove(
     State(config): State<Config>,
     Json(proof_request): Json<ProofRequest>,
-) -> StatusCode {
+) -> WsCloseCode {
     // Log the received data
     println!(
         "Received proof request - Bitcoin Address: {}, ML-DSA Address: {}",
@@ -275,38 +278,38 @@ async fn prove(
         ml_dsa_signed_message,
     ) = match validate_inputs(&proof_request) {
         Ok(result) => result,
-        Err(status) => return status,
+        Err(code) => return code,
     };
 
     // Re-create the message that should have been signed by both keypairs
     let expected_message = generate_expected_message(&bitcoin_address, &ml_dsa_address);
 
     // Step 2: Verify Bitcoin ownership
-    if let Err(status) =
+    if let Err(code) =
         verify_bitcoin_ownership(&bitcoin_address, &bitcoin_signed_message, &expected_message)
     {
-        return status;
+        return code;
     }
 
     // Step 3: Verify ML-DSA ownership
-    if let Err(status) = verify_ml_dsa_ownership(
+    if let Err(code) = verify_ml_dsa_ownership(
         &ml_dsa_address,
         &ml_dsa_public_key,
         &ml_dsa_signed_message,
         &expected_message,
     ) {
-        return status;
+        return code;
     }
 
     // Step 4: Get attestation document with embedded addresses
     let attestation_doc_base64 =
         match embed_addresses_in_proof(&bitcoin_address, &ml_dsa_address).await {
             Ok(doc) => doc,
-            Err(status) => return status,
+            Err(code) => return code,
         };
 
     // Step 5: Upload to data layer
-    if let Err(status) = upload_to_data_layer(
+    if let Err(code) = upload_to_data_layer(
         &bitcoin_address,
         &ml_dsa_address,
         &attestation_doc_base64,
@@ -316,12 +319,12 @@ async fn prove(
     )
     .await
     {
-        return status;
+        return code;
     }
 
     // Success path
     println!("All verifications completed successfully");
-    StatusCode::NO_CONTENT
+    close_code::NORMAL
 }
 
 fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
@@ -462,7 +465,7 @@ fn verify_bitcoin_ownership(
     address: &BitcoinAddress,
     signature: &BitcoinMessageSignature,
     expected_message: &str,
-) -> Result<(), StatusCode> {
+) -> Result<(), WsCloseCode> {
     // Initialize secp256k1 context
     let secp = Secp256k1::verification_only();
 
@@ -523,7 +526,7 @@ fn verify_ml_dsa_ownership(
     verifying_key: &MlDsaVerifyingKey<MlDsa44>,
     signature: &MlDsaSignature<MlDsa44>,
     expected_message: &str,
-) -> Result<(), StatusCode> {
+) -> Result<(), WsCloseCode> {
     // Verify the signature
     ok_or_bad_request!(
         verifying_key.verify(expected_message.as_bytes(), signature),
@@ -551,7 +554,7 @@ fn verify_ml_dsa_ownership(
 async fn embed_addresses_in_proof(
     bitcoin_address: &BitcoinAddress,
     ml_dsa_address: &DecodedPqAddress,
-) -> Result<String, StatusCode> {
+) -> Result<String, WsCloseCode> {
     let client = Client::new();
 
     // Create and encode the user data struct
@@ -602,7 +605,7 @@ async fn upload_to_data_layer(
     version: &str,
     data_layer_url: &str,
     data_layer_api_key: &str,
-) -> Result<(), StatusCode> {
+) -> Result<(), WsCloseCode> {
     let client = Client::new();
 
     let request = UploadProofRequest {
@@ -638,7 +641,7 @@ async fn upload_to_data_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{response::IntoResponse, routing::post};
+    use axum::{http::StatusCode, response::IntoResponse, routing::post};
     use ml_dsa::{KeyGen, signature::Signer};
     use pq_address::{
         AddressParams as PqAddressParams, Network as PqNetwork, Version as PqVersion,
@@ -1128,7 +1131,7 @@ mod tests {
         ml_dsa_signed_message: &str,
         ml_dsa_address: &str,
         ml_dsa_public_key: &str,
-    ) -> StatusCode {
+    ) -> WsCloseCode {
         const TEST_VERSION: &str = "1.1.0";
 
         let bitcoin_address = bitcoin_address.to_string();
@@ -1210,7 +1213,7 @@ mod tests {
             VALID_ML_DSA_PUBLIC_KEY,
         )
         .await;
-        assert_eq!(response, StatusCode::NO_CONTENT);
+        assert_eq!(response, close_code::NORMAL);
     }
 
     #[tokio::test]
@@ -1224,7 +1227,7 @@ mod tests {
             VALID_ML_DSA_PUBLIC_KEY,
         )
         .await;
-        assert_eq!(response, StatusCode::NO_CONTENT);
+        assert_eq!(response, close_code::NORMAL);
     }
 
     #[tokio::test]
@@ -1238,7 +1241,7 @@ mod tests {
             VALID_ML_DSA_PUBLIC_KEY,
         )
         .await;
-        assert_eq!(response, StatusCode::BAD_REQUEST);
+        assert_eq!(response, close_code::INVALID);
     }
 
     #[test]
