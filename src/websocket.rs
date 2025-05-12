@@ -34,16 +34,16 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
     println!("WebSocket connection established");
 
     // Step 1: Perform handshake
-    if let Err(code) = perform_handshake(&mut socket).await {
-        send_close_frame(&mut socket, code).await;
+    if let Err(error_code) = perform_handshake(&mut socket).await {
+        send_close_frame(&mut socket, error_code).await;
         return;
     }
 
     // Step 2: Receive the proof request
     let proof_request = match receive_proof_request(&mut socket).await {
         Ok(request) => request,
-        Err(code) => {
-            send_close_frame(&mut socket, code).await;
+        Err(error_code) => {
+            send_close_frame(&mut socket, error_code).await;
             return;
         }
     };
@@ -60,15 +60,15 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
 /// Performs the initial WebSocket handshake
 async fn perform_handshake(socket: &mut WebSocket) -> Result<(), WsCloseCode> {
     // Wait for message
-    let msg = match socket.recv().await {
-        Some(msg) => msg,
+    let received_message = match socket.recv().await {
+        Some(message) => message,
         None => {
             bad_request!("No handshake message received, client disconnected");
         }
     };
 
     // Ensure message is valid
-    let text = match msg {
+    let handshake_text = match received_message {
         Ok(WsMessage::Text(text)) => text,
         _ => {
             bad_request!("Expected text message for handshake, got something else");
@@ -76,29 +76,29 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<(), WsCloseCode> {
     };
 
     // Parse handshake message
-    let handshake: HandshakeMessage = ok_or_bad_request!(
-        serde_json::from_str(&text),
+    let handshake_request: HandshakeMessage = ok_or_bad_request!(
+        serde_json::from_str(&handshake_text),
         "Failed to parse handshake message JSON"
     );
 
     // Validate handshake content
-    if handshake.message != "hello" {
+    if handshake_request.message != "hello" {
         bad_request!("Invalid handshake message content: expected 'hello'");
     }
 
     println!("Received valid handshake message");
 
-    let response = HandshakeResponse {
+    let handshake_response = HandshakeResponse {
         message: "ack".to_string(),
     };
 
-    let json = ok_or_internal_error!(
-        serde_json::to_string(&response),
+    let response_json = ok_or_internal_error!(
+        serde_json::to_string(&handshake_response),
         "Failed to serialize handshake acknowledgment"
     );
 
     ok_or_internal_error!(
-        socket.send(WsMessage::Text(json.into())).await,
+        socket.send(WsMessage::Text(response_json.into())).await,
         "Failed to send handshake acknowledgment"
     );
 
@@ -108,15 +108,15 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<(), WsCloseCode> {
 /// Receives and validates a proof request from the WebSocket
 async fn receive_proof_request(socket: &mut WebSocket) -> Result<ProofRequest, WsCloseCode> {
     // Wait for message
-    let msg = match socket.recv().await {
-        Some(msg) => msg,
+    let received_message = match socket.recv().await {
+        Some(message) => message,
         None => {
             bad_request!("No proof request received, client disconnected");
         }
     };
 
     // Ensure message is valid
-    let text = match msg {
+    let request_text = match received_message {
         Ok(WsMessage::Text(text)) => text,
         _ => {
             bad_request!("Expected text message for proof request, got something else");
@@ -125,7 +125,7 @@ async fn receive_proof_request(socket: &mut WebSocket) -> Result<ProofRequest, W
 
     // Parse proof request
     let proof_request = ok_or_bad_request!(
-        serde_json::from_str(&text),
+        serde_json::from_str(&request_text),
         "Failed to parse proof request JSON"
     );
 
@@ -139,9 +139,9 @@ async fn send_close_frame(socket: &mut WebSocket, code: WsCloseCode) {
         reason: "".into(),
     };
 
-    // Per WebSocket protocol, we only try to send a close frame once.
-    // If it fails, we just log it - there's nothing else we can or should do.
-    if let Err(e) = socket.send(WsMessage::Close(Some(close_frame))).await {
-        eprintln!("Failed to send close frame (code: {}): {}", code, e);
+    // Per WebSocket protocol, we only send a close frame once.
+    // If it fails, we just log the error and continue - there's nothing else we can do.
+    if let Err(error) = socket.send(WsMessage::Close(Some(close_frame))).await {
+        eprintln!("Failed to send close frame (code: {}): {}", code, error);
     }
 }
