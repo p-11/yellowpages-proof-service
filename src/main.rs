@@ -86,7 +86,7 @@ macro_rules! ok_or_bad_request {
             Ok(val) => val,
             Err(e) => {
                 eprintln!("{}: {}", $err_msg, e);
-                return Err(close_code::INVALID);
+                return Err(close_code::POLICY);
             }
         }
     };
@@ -97,11 +97,11 @@ macro_rules! ok_or_bad_request {
 macro_rules! bad_request {
     ($err_msg:expr) => {{
         eprintln!($err_msg);
-        return Err(close_code::INVALID);
+        return Err(close_code::POLICY);
     }};
     ($fmt:expr, $($arg:tt)*) => {{
         eprintln!($fmt, $($arg)*);
-        return Err(close_code::INVALID);
+        return Err(close_code::POLICY);
     }};
 }
 
@@ -1245,7 +1245,7 @@ mod tests {
             VALID_ML_DSA_PUBLIC_KEY,
         )
         .await;
-        assert_eq!(response, close_code::INVALID);
+        assert_eq!(response, close_code::POLICY);
     }
 
     #[test]
