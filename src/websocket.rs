@@ -6,7 +6,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{Config, Json, WsCloseCode, prove};
+use crate::{Config, Json, ProofRequest, WsCloseCode, prove};
 
 /// Message sent by client to initiate handshake
 #[derive(Deserialize)]
@@ -35,10 +35,19 @@ async fn handle_protocol(mut socket: WebSocket, config: Config) {
         return;
     }
 
-    // Step 2: Handle proof request and get close code
-    let close_code = handle_proof_request(&mut socket, config).await;
+    // Step 2: Receive the proof request
+    let proof_request = match receive_proof_request(&mut socket).await {
+        Ok(request) => request,
+        Err(code) => {
+            send_close_frame(&mut socket, code).await;
+            return;
+        }
+    };
 
-    // Always close the connection with the appropriate close code
+    // Step 3: Process the proof request
+    let close_code = prove(State(config), Json(proof_request)).await;
+
+    // Step 4: Close the connection with the appropriate code
     send_close_frame(&mut socket, close_code).await;
 
     println!("WebSocket connection terminated with code: {}", close_code);
@@ -102,26 +111,19 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<(), WsCloseCode> {
     Ok(())
 }
 
-/// Handles the proof request step of the protocol
-async fn handle_proof_request(socket: &mut WebSocket, config: Config) -> WsCloseCode {
+/// Receives and validates a proof request from the WebSocket
+async fn receive_proof_request(socket: &mut WebSocket) -> Result<ProofRequest, WsCloseCode> {
     // Wait for message
-    let msg = match socket.recv().await {
-        Some(msg) => msg,
-        None => return close_code::PROTOCOL,
-    };
+    let msg = socket.recv().await.ok_or(close_code::PROTOCOL)?;
 
     // Ensure message is valid
     let text = match msg {
         Ok(WsMessage::Text(text)) => text,
-        _ => return close_code::UNSUPPORTED,
+        _ => return Err(close_code::UNSUPPORTED),
     };
 
     // Parse proof request
-    let proof_request = match serde_json::from_str(&text) {
-        Ok(request) => request,
-        Err(_) => return close_code::INVALID,
-    };
+    let proof_request = serde_json::from_str(&text).map_err(|_| close_code::INVALID)?;
 
-    // Process the proof request - it returns a WebSocket close code directly
-    prove(State(config), Json(proof_request)).await
+    Ok(proof_request)
 }
