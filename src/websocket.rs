@@ -79,8 +79,6 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
 
     // Step 4: Close the connection with the appropriate code
     send_close_frame(&mut socket, close_code).await;
-
-    println!("WebSocket connection terminated with code: {}", close_code);
 }
 
 /// Performs the initial WebSocket handshake
@@ -176,4 +174,5 @@ async fn send_close_frame(socket: &mut WebSocket, code: WsCloseCode) {
     if let Err(error) = socket.send(WsMessage::Close(Some(close_frame))).await {
         eprintln!("Failed to send close frame (code: {}): {}", code, error);
     }
+    println!("WebSocket connection terminated with code: {}", code);
 }
