@@ -646,6 +646,7 @@ async fn upload_to_data_layer(
 mod tests {
     use super::*;
     use axum::{http::StatusCode, response::IntoResponse, routing::post};
+    use futures_util::{SinkExt, StreamExt};
     use ml_dsa::{KeyGen, signature::Signer};
     use pq_address::{
         AddressParams as PqAddressParams, Network as PqNetwork, Version as PqVersion,
@@ -653,6 +654,9 @@ mod tests {
     };
     use serial_test::serial;
     use tokio::net::TcpListener;
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
+    use url::Url;
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
@@ -1213,9 +1217,6 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Connect to the WebSocket server
-        use tokio_tungstenite::connect_async;
-        use url::Url;
-
         let url = Url::parse(&format!("ws://{}/ws", addr)).unwrap();
         let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
 
@@ -1228,9 +1229,6 @@ mod tests {
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
     ) -> Result<(), WsCloseCode> {
-        use futures_util::{SinkExt, StreamExt};
-        use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
-
         // Send correct handshake message - hardcoded JSON for clarity
         let handshake_json = r#"{"message":"hello"}"#;
         ws_stream
@@ -1277,9 +1275,6 @@ mod tests {
         >,
         proof_request: &ProofRequest,
     ) -> WsCloseCode {
-        use futures_util::{SinkExt, StreamExt};
-        use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
-
         // Construct proof request JSON explicitly
         let proof_request_json = format!(
             r#"{{
@@ -1393,9 +1388,6 @@ mod tests {
         let mut ws_stream =
             set_up_end_to_end_test_servers(VALID_BITCOIN_ADDRESS_P2PKH, VALID_ML_DSA_ADDRESS).await;
 
-        use futures_util::{SinkExt, StreamExt};
-        use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
-
         // Send incorrect handshake message directly with hardcoded JSON
         let incorrect_json = r#"{"message":"wrong_message"}"#;
         ws_stream
@@ -1425,9 +1417,6 @@ mod tests {
             set_up_end_to_end_test_servers(VALID_BITCOIN_ADDRESS_P2PKH, VALID_ML_DSA_ADDRESS).await;
 
         // Send a binary message instead of text for handshake
-        use futures_util::{SinkExt, StreamExt};
-        use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
-
         ws_stream
             .send(TungsteniteMessage::Binary(vec![1, 2, 3]))
             .await
@@ -1453,9 +1442,6 @@ mod tests {
         // Set up the test servers
         let mut ws_stream =
             set_up_end_to_end_test_servers(VALID_BITCOIN_ADDRESS_P2PKH, VALID_ML_DSA_ADDRESS).await;
-
-        use futures_util::{SinkExt, StreamExt};
-        use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
 
         // Send malformed handshake message (missing required field)
         let incorrect_format = r#"{"wrong_field": "hello"}"#;
@@ -1490,9 +1476,6 @@ mod tests {
         assert!(handshake_result.is_ok(), "Valid handshake should succeed");
 
         // Send invalid JSON as proof request
-        use futures_util::{SinkExt, StreamExt};
-        use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
-
         ws_stream
             .send(TungsteniteMessage::Text("not valid json".into()))
             .await
