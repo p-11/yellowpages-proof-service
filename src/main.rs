@@ -27,9 +27,7 @@ use serde_json::json;
 use std::env;
 use std::str::FromStr;
 use tower_http::cors::{Any, CorsLayer};
-
-/// Type alias for WebSocket close codes
-pub type WsCloseCode = u16;
+use websocket::WsCloseCode;
 
 type ValidationResult = Result<
     (

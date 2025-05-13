@@ -1,4 +1,6 @@
+use crate::{Config, ProofRequest, bad_request, ok_or_bad_request, ok_or_internal_error};
 use axum::{
+    Json,
     extract::State,
     extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade, close_code},
     response::IntoResponse,
@@ -7,16 +9,15 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::time::timeout;
 
-use crate::{Config, Json, ProofRequest, WsCloseCode};
-// Import the macros directly from the crate root
-use crate::{bad_request, ok_or_bad_request, ok_or_internal_error};
-
 // Constants for timeouts
 const HANDSHAKE_TIMEOUT_SECS: u64 = 30; // 30 seconds for initial handshake
 const PROOF_REQUEST_TIMEOUT_SECS: u64 = 30; // 30 seconds for proof submission
 
 // Custom close code in the private range 4000-4999
 const TIMEOUT_CLOSE_CODE: u16 = 4000; // Custom code for timeout errors
+
+/// Type alias for WebSocket close codes
+pub type WsCloseCode = u16;
 
 // Macro to handle WebSocket timeout
 macro_rules! with_timeout {
