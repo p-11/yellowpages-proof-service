@@ -15,6 +15,9 @@ use crate::{bad_request, ok_or_bad_request, ok_or_internal_error};
 const HANDSHAKE_TIMEOUT_SECS: u64 = 30; // 30 seconds for initial handshake
 const PROOF_REQUEST_TIMEOUT_SECS: u64 = 30; // 30 seconds for proof submission
 
+// Custom close code in the private range 4000-4999
+const TIMEOUT_CLOSE_CODE: u16 = 4000; // Custom code for timeout errors
+
 // Macro to handle WebSocket timeout
 macro_rules! with_timeout {
     ($timeout_secs:expr, $operation:expr, $timeout_name:expr) => {
@@ -26,7 +29,7 @@ macro_rules! with_timeout {
                     "{} timed out after {} seconds",
                     $timeout_name, $timeout_secs
                 );
-                return Err(close_code::PROTOCOL);
+                return Err(TIMEOUT_CLOSE_CODE);
             }
         }
     };
