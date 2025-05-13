@@ -656,7 +656,6 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
-    use url::Url;
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
@@ -1216,9 +1215,11 @@ mod tests {
         // Give the server a moment to start
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        // Connect to the WebSocket server
-        let url = Url::parse(&format!("ws://{}/ws", addr)).unwrap();
-        let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
+        // Connect to the WebSocket server using just the string URL
+        let ws_url = format!("ws://{}/ws", addr);
+        let (ws_stream, _) = connect_async(ws_url)
+            .await
+            .expect("Failed to connect to WebSocket server");
 
         ws_stream
     }
@@ -1292,7 +1293,7 @@ mod tests {
         );
 
         ws_stream
-            .send(TungsteniteMessage::Text(proof_request_json))
+            .send(TungsteniteMessage::Text(proof_request_json.into()))
             .await
             .unwrap();
 
@@ -1418,7 +1419,7 @@ mod tests {
 
         // Send a binary message instead of text for handshake
         ws_stream
-            .send(TungsteniteMessage::Binary(vec![1, 2, 3]))
+            .send(TungsteniteMessage::Binary(vec![1, 2, 3].into()))
             .await
             .unwrap();
 
