@@ -16,5 +16,10 @@ tower-http = { version = "0.6.2", features = ["cors"] }
 pq_address = "0.1.1"
 
 [dev-dependencies]
+async-trait = "0.1.88"
+futures = "0.3.31"
+futures-util = "0.3.30"
 rand = "0.9.1"
 serial_test = "3.2.0"
+tokio-tungstenite = "0.21.0"
+url = "2.5.0"
