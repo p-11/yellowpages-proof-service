@@ -96,7 +96,7 @@ macro_rules! bad_request {
     }};
 }
 
-// Macro for simple error logging and returning ERROR code
+// Macro for simple error logging and returning Internal Error code
 #[macro_export]
 macro_rules! internal_error {
     ($err_msg:expr) => {{
@@ -109,7 +109,7 @@ macro_rules! internal_error {
     }};
 }
 
-// Macro for handling Results that should return ERROR if Err
+// Macro for handling Results that should return Internal Error if Err
 #[macro_export]
 macro_rules! ok_or_internal_error {
     ($expr:expr, $err_msg:expr) => {
