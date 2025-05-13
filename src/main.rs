@@ -208,7 +208,7 @@ async fn main() {
     // build our application with routes and CORS
     let app = Router::new()
         .route("/health", get(health))
-        .route("/ws", get(handle_ws_upgrade))
+        .route("/prove", get(handle_ws_upgrade))
         .with_state(config)
         .layer(cors);
 
@@ -1179,7 +1179,7 @@ mod tests {
         // WebSocket-based approach
         // Start a WebSocket server with the main WebSocket handler
         let app = Router::new().route(
-            "/ws",
+            "/prove",
             axum::routing::get(websocket::handle_ws_upgrade).with_state(config),
         );
 
@@ -1196,7 +1196,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Connect to the WebSocket server using just the string URL
-        let ws_url = format!("ws://{}/ws", addr);
+        let ws_url = format!("ws://{}/prove", addr);
         let (ws_stream, _) = connect_async(ws_url)
             .await
             .expect("Failed to connect to WebSocket server");
