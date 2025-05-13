@@ -1,4 +1,3 @@
-// Add module declaration at the top
 mod websocket;
 
 use axum::{
@@ -27,7 +26,7 @@ use serde_json::json;
 use std::env;
 use std::str::FromStr;
 use tower_http::cors::{Any, CorsLayer};
-use websocket::WsCloseCode;
+use websocket::{WsCloseCode, handle_ws_upgrade};
 
 type ValidationResult = Result<
     (
@@ -226,7 +225,7 @@ async fn main() {
     // build our application with routes and CORS
     let app = Router::new()
         .route("/health", get(health))
-        .route("/ws", get(websocket::handle_ws_upgrade))
+        .route("/ws", get(handle_ws_upgrade))
         .with_state(config)
         .layer(cors);
 
