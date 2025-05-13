@@ -1,12 +1,6 @@
 mod websocket;
 
-use axum::{
-    Json, Router,
-    extract::State,
-    extract::ws::close_code,
-    http::{Method, header},
-    routing::get,
-};
+use axum::{Json, Router, extract::State, extract::ws::close_code, http::Method, routing::get};
 use base64::{Engine, engine::general_purpose};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
@@ -209,18 +203,7 @@ async fn main() {
     // Configure CORS to allow all origins but restrict headers
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([Method::POST])
-        .allow_headers([
-            header::CONTENT_TYPE, // For JSON requests
-            header::UPGRADE,      // For WebSocket upgrade
-            header::CONNECTION,   // For WebSocket upgrade
-            header::SEC_WEBSOCKET_KEY,
-            header::SEC_WEBSOCKET_VERSION,
-            // These 3 headers may be present in CORS preflight OPTIONS requests:
-            header::ACCESS_CONTROL_REQUEST_METHOD,
-            header::ACCESS_CONTROL_REQUEST_HEADERS,
-            header::ORIGIN,
-        ]);
+        .allow_methods([Method::GET]);
 
     // build our application with routes and CORS
     let app = Router::new()
