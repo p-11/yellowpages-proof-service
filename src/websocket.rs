@@ -1,6 +1,5 @@
-use crate::{Config, ProofRequest, bad_request, ok_or_bad_request, ok_or_internal_error};
+use crate::{Config, ProofRequest, bad_request, ok_or_bad_request, ok_or_internal_error, prove};
 use axum::{
-    Json,
     extract::State,
     extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade, close_code},
     response::IntoResponse,
@@ -76,7 +75,7 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
     };
 
     // Step 3: Process the proof request
-    let close_code = crate::prove(State(config), Json(proof_request)).await;
+    let close_code = prove(config, proof_request).await;
 
     // Step 4: Close the connection with the appropriate code
     send_close_frame(&mut socket, close_code).await;
