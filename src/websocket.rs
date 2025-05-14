@@ -74,7 +74,11 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
         }
     };
 
-    // Step 3: Process the proof request - Box the large future
+    // Step 3: Process the proof request
+    // Box the future to avoid large stack allocations. The prove() function deals with large
+    // PQC data (large ML-DSA keys and signatures) which results
+    // in a 31KB future at the time of writing this comment. Boxing moves this to the heap.
+    // Heap may result in slower latency, but we are more limited by memory issues than latency.
     let close_code = Box::pin(prove(config, proof_request)).await;
 
     // Step 4: Close the connection with the appropriate code
