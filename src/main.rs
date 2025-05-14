@@ -1191,7 +1191,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Connect to the WebSocket server
-        let ws_url = format!("ws://{}/prove", addr);
+        let ws_url = format!("ws://{addr}/prove");
         let (ws_stream, _) = connect_async(ws_url)
             .await
             .expect("Failed to connect to WebSocket server");
@@ -1213,25 +1213,22 @@ mod tests {
 
         // Receive handshake response
         let response = ws_stream.next().await.unwrap().unwrap();
-        match response {
-            TungsteniteMessage::Text(text) => {
-                // Parse the handshake response
-                let handshake_response: websocket::HandshakeResponse =
-                    serde_json::from_str(&text).expect("Failed to parse handshake response");
+        if let TungsteniteMessage::Text(text) = response {
+            // Parse the handshake response
+            let handshake_response: websocket::HandshakeResponse =
+                serde_json::from_str(&text).expect("Failed to parse handshake response");
 
-                // Verify the response message is "ack"
-                assert_eq!(
-                    handshake_response.message, "ack",
-                    "Handshake response should be 'ack'"
-                );
-                println!("Handshake successful");
-                Ok(())
-            }
-            _ => {
-                // Unexpected response - this should never happen in tests
-                println!("Unexpected response type");
-                Err(close_code::ERROR)
-            }
+            // Verify the response message is "ack"
+            assert_eq!(
+                handshake_response.message, "ack",
+                "Handshake response should be 'ack'"
+            );
+            println!("Handshake successful");
+            Ok(())
+        } else {
+            // Unexpected response - this should never happen in tests
+            println!("Unexpected response type");
+            Err(close_code::ERROR)
         }
     }
 

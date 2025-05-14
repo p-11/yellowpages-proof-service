@@ -74,8 +74,8 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
         }
     };
 
-    // Step 3: Process the proof request
-    let close_code = prove(config, proof_request).await;
+    // Step 3: Process the proof request - Box the large future
+    let close_code = Box::pin(prove(config, proof_request)).await;
 
     // Step 4: Close the connection with the appropriate code
     send_close_frame(&mut socket, close_code).await;
@@ -87,19 +87,13 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<(), WsCloseCode> {
     let receive_result = with_timeout!(HANDSHAKE_TIMEOUT_SECS, socket.recv(), "Handshake message");
 
     // Handle the result of the receive operation
-    let received_message = match receive_result {
-        Some(message) => message,
-        None => {
-            bad_request!("No handshake message received, client disconnected");
-        }
+    let Some(received_message) = receive_result else {
+        bad_request!("No handshake message received, client disconnected");
     };
 
     // Ensure message is valid
-    let handshake_text = match received_message {
-        Ok(WsMessage::Text(text)) => text,
-        _ => {
-            bad_request!("Expected text message for handshake, got something else");
-        }
+    let Ok(WsMessage::Text(handshake_text)) = received_message else {
+        bad_request!("Expected text message for handshake, got something else");
     };
 
     // Parse handshake message
@@ -138,19 +132,13 @@ async fn receive_proof_request(socket: &mut WebSocket) -> Result<ProofRequest, W
     let receive_result = with_timeout!(PROOF_REQUEST_TIMEOUT_SECS, socket.recv(), "Proof request");
 
     // Handle the result of the receive operation
-    let received_message = match receive_result {
-        Some(message) => message,
-        None => {
-            bad_request!("No proof request received, client disconnected");
-        }
+    let Some(received_message) = receive_result else {
+        bad_request!("No proof request received, client disconnected");
     };
 
     // Ensure message is valid
-    let request_text = match received_message {
-        Ok(WsMessage::Text(text)) => text,
-        _ => {
-            bad_request!("Expected text message for proof request, got something else");
-        }
+    let Ok(WsMessage::Text(request_text)) = received_message else {
+        bad_request!("Expected text message for proof request, got something else");
     };
 
     // Parse proof request
@@ -172,7 +160,7 @@ async fn send_close_frame(socket: &mut WebSocket, code: WsCloseCode) {
     // Per WebSocket protocol, we only send a close frame once.
     // If it fails, we just log the error and continue - there's nothing else we can do.
     if let Err(error) = socket.send(WsMessage::Close(Some(close_frame))).await {
-        eprintln!("Failed to send close frame (code: {}): {}", code, error);
+        eprintln!("Failed to send close frame (code: {code}): {error}");
     }
-    println!("WebSocket connection terminated with code: {}", code);
+    println!("WebSocket connection terminated with code: {code}");
 }
