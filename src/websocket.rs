@@ -4,7 +4,7 @@ use axum::{
     extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade, close_code},
     response::IntoResponse,
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use base64::{Engine, engine::general_purpose};
 use ml_kem::{EncodedSizeUser, MlKem768Params, kem::Encapsulate, kem::EncapsulationKey};
 use rand::{SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
@@ -116,7 +116,7 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<Vec<u8>, WsCloseCod
 
     // Decode the base64 public key from the client
     let public_key_bytes = ok_or_bad_request!(
-        BASE64.decode(&handshake_request.public_key),
+        general_purpose::STANDARD.decode(&handshake_request.public_key),
         "Failed to decode base64 public key"
     );
 
@@ -151,7 +151,7 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<Vec<u8>, WsCloseCod
     println!("Generated ciphertext, length: {} bytes", ciphertext.len());
 
     // Encode the ciphertext to base64
-    let ciphertext_base64 = BASE64.encode(ciphertext.to_vec());
+    let ciphertext_base64 = general_purpose::STANDARD.encode(ciphertext.to_vec());
 
     // Create and send the response
     let handshake_response = HandshakeResponse {
