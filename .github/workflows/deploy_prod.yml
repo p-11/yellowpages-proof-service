@@ -25,6 +25,7 @@ env:
   EV_ENCLAVE_SIGNING_KEY: ${{ secrets.PROD_EV_ENCLAVE_SIGNING_KEY }}
   YP_DS_API_URL: ${{ secrets.PROD_YP_DS_API_URL }}
   YP_DS_API_KEY: ${{ secrets.PROD_YP_DS_API_KEY }}
+  EV_ENCLAVE_UUID: ${{ secrets.PROD_EV_ENCLAVE_UUID }}
   EV_ENCLAVE_DEBUG: false
 
 jobs:
