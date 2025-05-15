@@ -41,14 +41,12 @@ macro_rules! with_timeout {
 /// Message sent by client to initiate handshake
 #[derive(Serialize, Deserialize)]
 pub struct HandshakeMessage {
-    pub message: String,
     pub public_key: String, // Base64-encoded ML-KEM public key from client
 }
 
 /// Response sent by server to acknowledge handshake
 #[derive(Serialize, Deserialize)]
 pub struct HandshakeResponse {
-    pub message: String,
     pub ciphertext: String, // Base64-encoded ML-KEM ciphertext
 }
 
@@ -114,11 +112,6 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<Vec<u8>, WsCloseCod
         "Failed to parse handshake message JSON"
     );
 
-    // Validate handshake content
-    if handshake_request.message != "hello" {
-        bad_request!("Invalid handshake message content: expected 'hello'");
-    }
-
     println!("Received valid handshake message");
 
     // Decode the base64 public key from the client
@@ -162,7 +155,6 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<Vec<u8>, WsCloseCod
 
     // Create and send the response
     let handshake_response = HandshakeResponse {
-        message: "ack".to_string(),
         ciphertext: ciphertext_base64,
     };
 
