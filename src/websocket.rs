@@ -5,7 +5,10 @@ use axum::{
     response::IntoResponse,
 };
 use base64::{Engine, engine::general_purpose};
-use ml_kem::{EncodedSizeUser, MlKem768Params, kem::Encapsulate, kem::EncapsulationKey};
+use ml_kem::{
+    Ciphertext, EncodedSizeUser, MlKem768, MlKem768Params, SharedKey,
+    kem::{Encapsulate, EncapsulationKey},
+};
 use rand::{SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -92,7 +95,7 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
 }
 
 /// Performs the initial WebSocket handshake
-async fn perform_handshake(socket: &mut WebSocket) -> Result<Vec<u8>, WsCloseCode> {
+async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>, WsCloseCode> {
     // Wait for message with a timeout
     let receive_result = with_timeout!(HANDSHAKE_TIMEOUT_SECS, socket.recv(), "Handshake message");
 
@@ -120,11 +123,6 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<Vec<u8>, WsCloseCod
         "Failed to decode base64 public key"
     );
 
-    println!(
-        "Decoded public key, length: {} bytes",
-        public_key_bytes.len()
-    );
-
     // Convert to ML-KEM public key
     let public_key_array = ok_or_bad_request!(
         public_key_bytes.as_slice().try_into(),
@@ -136,19 +134,14 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<Vec<u8>, WsCloseCod
 
     // Generate the shared secret and ciphertext
     let mut rng = StdRng::from_entropy();
-    let (ciphertext, shared_secret) = match public_key.encapsulate(&mut rng) {
-        Ok(result) => result,
-        Err(_) => {
-            eprintln!("Failed to encapsulate shared secret");
-            return Err(close_code::ERROR);
-        }
-    };
-
-    println!(
-        "Generated shared secret, length: {} bytes",
-        shared_secret.len()
-    );
-    println!("Generated ciphertext, length: {} bytes", ciphertext.len());
+    let (ciphertext, shared_secret): (Ciphertext<MlKem768>, SharedKey<MlKem768>) =
+        match public_key.encapsulate(&mut rng) {
+            Ok(result) => result,
+            Err(_) => {
+                eprintln!("Failed to encapsulate shared secret");
+                return Err(close_code::ERROR);
+            }
+        };
 
     // Encode the ciphertext to base64
     let ciphertext_base64 = general_purpose::STANDARD.encode(ciphertext.to_vec());
@@ -160,16 +153,18 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<Vec<u8>, WsCloseCod
 
     let response_json = ok_or_internal_error!(
         serde_json::to_string(&handshake_response),
-        "Failed to serialize handshake acknowledgment"
+        "Failed to serialize handshake response"
     );
 
     ok_or_internal_error!(
         socket.send(WsMessage::Text(response_json.into())).await,
-        "Failed to send handshake acknowledgment"
+        "Failed to send handshake response"
     );
 
-    // Convert the shared secret from Array to Vec and return
-    Ok(shared_secret.to_vec())
+    println!("Handshake successfully completed");
+
+    // Return the shared secret directly
+    Ok(shared_secret)
 }
 
 /// Receives and validates a proof request from the WebSocket
