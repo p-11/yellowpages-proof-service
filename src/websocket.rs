@@ -6,13 +6,15 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose};
 use ml_kem::{
-    Ciphertext, EncodedSizeUser, MlKem768, MlKem768Params, SharedKey,
-    kem::{Encapsulate, EncapsulationKey},
+    array::Array, kem::{Encapsulate, EncapsulationKey}, ArraySize, Ciphertext, Encoded, EncodedSizeUser, MlKem768, MlKem768Params, SharedKey
 };
 use rand::{SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::time::timeout;
+
+// ML-KEM-768 params
+const ML_KEM_768_PUBLIC_KEY_LENGTH: usize = 1184;
 
 // Constants for timeouts
 const HANDSHAKE_TIMEOUT_SECS: u64 = 30; // 30 seconds for initial handshake
@@ -122,6 +124,14 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
         general_purpose::STANDARD.decode(&handshake_request.public_key),
         "Failed to decode base64 public key"
     );
+
+    if public_key_bytes.len() != ML_KEM_768_PUBLIC_KEY_LENGTH {
+        bad_request!(
+            "Invalid ML-KEM-768 public key length: expected {} bytes, got {}",
+            ML_KEM_768_PUBLIC_KEY_LENGTH,
+            public_key_bytes.len()
+        );
+    }
 
     // Convert to ML-KEM public key
     let public_key_array = ok_or_bad_request!(
