@@ -4,6 +4,9 @@ use axum::{
     extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade, close_code},
     response::IntoResponse,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use ml_kem::{EncodedSizeUser, MlKem768Params, kem::Encapsulate, kem::EncapsulationKey};
+use rand::{SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::time::timeout;
@@ -39,12 +42,14 @@ macro_rules! with_timeout {
 #[derive(Serialize, Deserialize)]
 pub struct HandshakeMessage {
     pub message: String,
+    pub public_key: String, // Base64-encoded ML-KEM public key from client
 }
 
 /// Response sent by server to acknowledge handshake
 #[derive(Serialize, Deserialize)]
 pub struct HandshakeResponse {
     pub message: String,
+    pub ciphertext: String, // Base64-encoded ML-KEM ciphertext
 }
 
 /// WebSocket handler that implements a stateful handshake followed by proof verification
@@ -59,11 +64,14 @@ pub async fn handle_ws_upgrade(
 async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
     println!("WebSocket connection established");
 
-    // Step 1: Perform handshake
-    if let Err(error_code) = perform_handshake(&mut socket).await {
-        send_close_frame(&mut socket, error_code).await;
-        return;
-    }
+    // Step 1: Perform handshake and get the shared secret
+    let _shared_secret = match perform_handshake(&mut socket).await {
+        Ok(secret) => secret,
+        Err(error_code) => {
+            send_close_frame(&mut socket, error_code).await;
+            return;
+        }
+    };
 
     // Step 2: Receive the proof request
     let proof_request = match receive_proof_request(&mut socket).await {
@@ -86,7 +94,7 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
 }
 
 /// Performs the initial WebSocket handshake
-async fn perform_handshake(socket: &mut WebSocket) -> Result<(), WsCloseCode> {
+async fn perform_handshake(socket: &mut WebSocket) -> Result<Vec<u8>, WsCloseCode> {
     // Wait for message with a timeout
     let receive_result = with_timeout!(HANDSHAKE_TIMEOUT_SECS, socket.recv(), "Handshake message");
 
@@ -113,8 +121,49 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<(), WsCloseCode> {
 
     println!("Received valid handshake message");
 
+    // Decode the base64 public key from the client
+    let public_key_bytes = ok_or_bad_request!(
+        BASE64.decode(&handshake_request.public_key),
+        "Failed to decode base64 public key"
+    );
+
+    println!(
+        "Decoded public key, length: {} bytes",
+        public_key_bytes.len()
+    );
+
+    // Convert to ML-KEM public key
+    let public_key_array = ok_or_bad_request!(
+        public_key_bytes.as_slice().try_into(),
+        "Invalid public key length"
+    );
+
+    // Create the encapsulation key directly - from_bytes doesn't return a Result
+    let public_key = EncapsulationKey::<MlKem768Params>::from_bytes(public_key_array);
+
+    // Generate the shared secret and ciphertext
+    let mut rng = StdRng::from_entropy();
+    let (ciphertext, shared_secret) = match public_key.encapsulate(&mut rng) {
+        Ok(result) => result,
+        Err(_) => {
+            eprintln!("Failed to encapsulate shared secret");
+            return Err(close_code::ERROR);
+        }
+    };
+
+    println!(
+        "Generated shared secret, length: {} bytes",
+        shared_secret.len()
+    );
+    println!("Generated ciphertext, length: {} bytes", ciphertext.len());
+
+    // Encode the ciphertext to base64
+    let ciphertext_base64 = BASE64.encode(ciphertext.to_vec());
+
+    // Create and send the response
     let handshake_response = HandshakeResponse {
         message: "ack".to_string(),
+        ciphertext: ciphertext_base64,
     };
 
     let response_json = ok_or_internal_error!(
@@ -127,7 +176,8 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<(), WsCloseCode> {
         "Failed to send handshake acknowledgment"
     );
 
-    Ok(())
+    // Convert the shared secret from Array to Vec and return
+    Ok(shared_secret.to_vec())
 }
 
 /// Receives and validates a proof request from the WebSocket
