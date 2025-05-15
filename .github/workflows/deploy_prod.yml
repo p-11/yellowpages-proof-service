@@ -1,4 +1,4 @@
-name: Deploy Dev
+name: Deploy Prod
 
 on:
   workflow_dispatch:
@@ -19,30 +19,30 @@ on:
 env:
   VERSION: ${{ github.event.inputs.major }}.${{ github.event.inputs.minor }}.${{ github.event.inputs.patch }}
   RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-  EV_API_KEY: ${{ secrets.DEV_EV_API_KEY_WITH_ENCLAVE_DEPLOY_PERMISSION }}
-  EV_APP_UUID: ${{ secrets.DEV_EV_APP_UUID }}
-  EV_ENCLAVE_SIGNING_CERT: ${{ secrets.DEV_EV_ENCLAVE_SIGNING_CERT }}
-  EV_ENCLAVE_SIGNING_KEY: ${{ secrets.DEV_EV_ENCLAVE_SIGNING_KEY }}
-  YP_DS_API_URL: ${{ secrets.DEV_YP_DS_API_URL }}
-  YP_DS_API_KEY: ${{ secrets.DEV_YP_DS_API_KEY }}
-  EV_ENCLAVE_UUID: ${{ secrets.DEV_EV_ENCLAVE_UUID }}
+  EV_API_KEY: ${{ secrets.PROD_EV_API_KEY_WITH_ENCLAVE_DEPLOY_PERMISSION }}
+  EV_APP_UUID: ${{ secrets.PROD_EV_APP_UUID }}
+  EV_ENCLAVE_SIGNING_CERT: ${{ secrets.PROD_EV_ENCLAVE_SIGNING_CERT }}
+  EV_ENCLAVE_SIGNING_KEY: ${{ secrets.PROD_EV_ENCLAVE_SIGNING_KEY }}
+  YP_DS_API_URL: ${{ secrets.PROD_YP_DS_API_URL }}
+  YP_DS_API_KEY: ${{ secrets.PROD_YP_DS_API_KEY }}
+  EV_ENCLAVE_UUID: ${{ secrets.PROD_EV_ENCLAVE_UUID }}
   EV_ENCLAVE_DEBUG: false
 
 jobs:
   deploy:
-    name: Deploy Dev
+    name: Deploy Prod
     runs-on: ubuntu-latest
-    environment: development
+    environment: production
 
     steps:
-      - name: Abort if not on development
+      - name: Abort if not on main
         run: |
-          # github.ref is like "refs/heads/development"
+          # github.ref is like "refs/heads/main"
           echo "Dispatched ref: $GITHUB_REF"
           BRANCH="${GITHUB_REF#refs/heads/}"
           echo "Selected branch: $BRANCH"
-          if [ "$BRANCH" != "development" ]; then
-            echo "::error::This workflow must be run on 'development', not '$BRANCH'."
+          if [ "$BRANCH" != "main" ]; then
+            echo "::error::This workflow must be run on 'main', not '$BRANCH'."
             exit 1
           fi
 

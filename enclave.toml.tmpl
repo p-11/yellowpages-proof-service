@@ -1,7 +1,7 @@
 version = 1
 name = "yellowpages-proof-service"
-uuid = "enclave_7c8330e13b41"
-app_uuid = "app_0883710b5780"
+uuid = "${EV_ENCLAVE_UUID}"
+app_uuid = "${EV_APP_UUID}"
 team_uuid = "team_2fdd8fada14e"
 dockerfile = "./Dockerfile"
 api_key_auth = false
@@ -9,7 +9,7 @@ trx_logging = true
 tls_termination = true
 forward_proxy_protocol = false
 trusted_headers = []
-debug = ${ENCLAVE_DEBUG}
+debug = ${EV_ENCLAVE_DEBUG}
 
 [egress]
 enabled = true
