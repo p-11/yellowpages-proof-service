@@ -6,7 +6,8 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose};
 use ml_kem::{
-    array::Array, kem::{Encapsulate, EncapsulationKey}, ArraySize, Ciphertext, Encoded, EncodedSizeUser, MlKem768, MlKem768Params, SharedKey
+    Ciphertext, Encoded, EncodedSizeUser, MlKem768, MlKem768Params, SharedKey,
+    kem::{Encapsulate, EncapsulationKey},
 };
 use rand::{SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
@@ -125,6 +126,7 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
         "Failed to decode base64 public key"
     );
 
+    // Verify the public key has the correct length for ML-KEM-768
     if public_key_bytes.len() != ML_KEM_768_PUBLIC_KEY_LENGTH {
         bad_request!(
             "Invalid ML-KEM-768 public key length: expected {} bytes, got {}",
@@ -133,14 +135,14 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
         );
     }
 
-    // Convert to ML-KEM public key
-    let public_key_array = ok_or_bad_request!(
+    // Convert bytes to ML-KEM public key using TryFrom (the proper way)
+    let public_key_array: Encoded<EncapsulationKey<MlKem768Params>> = ok_or_bad_request!(
         public_key_bytes.as_slice().try_into(),
-        "Invalid public key length"
+        "Failed to convert public key bytes to encoded type"
     );
 
-    // Create the encapsulation key directly - from_bytes doesn't return a Result
-    let public_key = EncapsulationKey::<MlKem768Params>::from_bytes(public_key_array);
+    // Create the encapsulation key from the array
+    let public_key = EncapsulationKey::<MlKem768Params>::from_bytes(&public_key_array);
 
     // Generate the shared secret and ciphertext
     let mut rng = StdRng::from_entropy();
