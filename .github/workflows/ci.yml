@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - development
+
+jobs:
+  code_checks:
+    name: Code Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Ensure Clippy is available
+        run: rustup component add clippy
+
+      - name: Ensure rustfmt is available
+        run: rustup component add rustfmt
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -W clippy::pedantic -D warnings
+
+      - name: Check Rust formatting
+        run: cargo fmt -- --check
+
+      - name: Run Rust tests
+        run: cargo test

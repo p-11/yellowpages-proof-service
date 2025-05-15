@@ -1,0 +1,143 @@
+name: Deploy Prod
+
+on:
+  workflow_dispatch:
+    inputs:
+      major:
+        description: "Major version (integer)"
+        type: number
+        required: true
+      minor:
+        description: "Minor version (integer)"
+        type: number
+        required: true
+      patch:
+        description: "Patch version (integer)"
+        type: number
+        required: true
+
+env:
+  VERSION: ${{ github.event.inputs.major }}.${{ github.event.inputs.minor }}.${{ github.event.inputs.patch }}
+  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  EV_API_KEY: ${{ secrets.PROD_EV_API_KEY_WITH_ENCLAVE_DEPLOY_PERMISSION }}
+  EV_APP_UUID: ${{ secrets.PROD_EV_APP_UUID }}
+  EV_ENCLAVE_SIGNING_CERT: ${{ secrets.PROD_EV_ENCLAVE_SIGNING_CERT }}
+  EV_ENCLAVE_SIGNING_KEY: ${{ secrets.PROD_EV_ENCLAVE_SIGNING_KEY }}
+  YP_DS_API_URL: ${{ secrets.PROD_YP_DS_API_URL }}
+  YP_DS_API_KEY: ${{ secrets.PROD_YP_DS_API_KEY }}
+  EV_ENCLAVE_UUID: ${{ secrets.PROD_EV_ENCLAVE_UUID }}
+  EV_ENCLAVE_DEBUG: false
+
+jobs:
+  deploy:
+    name: Deploy Prod
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Abort if not on main
+        run: |
+          # github.ref is like "refs/heads/main"
+          echo "Dispatched ref: $GITHUB_REF"
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          echo "Selected branch: $BRANCH"
+          if [ "$BRANCH" != "main" ]; then
+            echo "::error::This workflow must be run on 'main', not '$BRANCH'."
+            exit 1
+          fi
+
+      - name: Validate semver
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid semantic version: $VERSION"
+            exit 1
+          fi
+          echo "Version is valid: $VERSION"
+
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Render config.toml
+        env:
+          YP_DS_API_URL: ${{ env.YP_DS_API_URL }}
+          EV_ENCLAVE_DEBUG: ${{ env.EV_ENCLAVE_DEBUG }}
+          EV_ENCLAVE_UUID: ${{ env.EV_ENCLAVE_UUID }}
+          EV_APP_UUID: ${{ env.EV_APP_UUID }}
+        run: envsubst < enclave.toml.tmpl > enclave.toml
+
+      - name: Ensure Clippy is available
+        run: rustup component add clippy
+
+      - name: Ensure rustfmt is available
+        run: rustup component add rustfmt
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -W clippy::pedantic -D warnings
+
+      - name: Check Rust formatting
+        run: cargo fmt -- --check
+
+      - name: Run Rust tests
+        run: cargo test
+
+      - name: Deploy Enclave
+        env:
+          EV_API_KEY: ${{ env.EV_API_KEY }}
+          EV_APP_UUID: ${{ env.EV_APP_UUID }}
+          EV_ENCLAVE_SIGNING_CERT: ${{ env.EV_ENCLAVE_SIGNING_CERT }}
+          EV_ENCLAVE_SIGNING_KEY: ${{ env.EV_ENCLAVE_SIGNING_KEY }}
+          VERSION: ${{ env.VERSION }}
+        run: |
+          # fail fast if any part of the pipe errors
+          set -eo pipefail
+          # install the CLI
+          curl https://cli.evervault.com/v4/install -sL | sh
+          # write cert + key
+          echo "$EV_ENCLAVE_SIGNING_CERT" > cert.pem
+          echo "$EV_ENCLAVE_SIGNING_KEY"  > key.pem
+          # deploy and emit a compact pcr.json
+          ev enclave deploy -v \
+            --build-arg VERSION=${{ env.VERSION }} \
+            --config=./enclave.toml \
+            | tee raw.json \
+            | jq -c \
+                --arg version ${{ env.VERSION }} \
+                --arg run_url ${{ env.RUN_URL }} \
+                '{
+                  version:            $version,
+                  github_action_run:  $run_url,
+                  pcr_0:              .measurements.PCR0,
+                  pcr_1:              .measurements.PCR1,
+                  pcr_2:              .measurements.PCR2,
+                  pcr_8:              .measurements.PCR8
+                }' > pcrs.json
+
+      - name: Upload PCRs & version to the YP Data Service
+        env:
+          YP_DS_API_URL: ${{ env.YP_DS_API_URL }}
+          YP_DS_API_KEY: ${{ env.YP_DS_API_KEY }}
+        run: |
+          # fail fast if any part of the pipe errors
+          set -eo pipefail
+          echo "Sending PCR JSON to data service…"
+          # -sS: silent but show errors; -f: fail on HTTP 4xx/5xx
+          curl -sS -f \
+            -X POST "https://${{ env.YP_DS_API_URL }}/v1/proofs/measurements/aws-nitro-pcr-sets" \
+            -H "x-api-key: ${{ env.YP_DS_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            --data @pcrs.json \
+            > /dev/null
+          echo "Uploaded to the YP Data Service"
+
+      - name: Output PCRs & version in GitHub Step Summary
+        run: |
+          echo "### Enclave Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY # blank line
+          echo "**Timestamp**: $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "**Version**: $(cat pcrs.json | jq -r '.version')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY # blank line
+          echo "**PCRs**:" >> $GITHUB_STEP_SUMMARY
+          echo "- PCR0: $(cat pcrs.json | jq -r '.pcr_0')" >> $GITHUB_STEP_SUMMARY
+          echo "- PCR1: $(cat pcrs.json | jq -r '.pcr_1')" >> $GITHUB_STEP_SUMMARY
+          echo "- PCR2: $(cat pcrs.json | jq -r '.pcr_2')" >> $GITHUB_STEP_SUMMARY
+          echo "- PCR8: $(cat pcrs.json | jq -r '.pcr_8')" >> $GITHUB_STEP_SUMMARY

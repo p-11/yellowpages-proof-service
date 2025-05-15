@@ -1,0 +1,24 @@
+version = 1
+name = "yellowpages-proof-service"
+uuid = "${EV_ENCLAVE_UUID}"
+app_uuid = "${EV_APP_UUID}"
+team_uuid = "team_2fdd8fada14e"
+dockerfile = "./Dockerfile"
+api_key_auth = false
+trx_logging = true
+tls_termination = true
+forward_proxy_protocol = false
+trusted_headers = []
+debug = ${EV_ENCLAVE_DEBUG}
+
+[egress]
+enabled = true
+destinations = ["${YP_DS_API_URL}"]
+
+[healthcheck]
+path = "/health"
+
+
+[signing]
+certPath = "./cert.pem"
+keyPath = "./key.pem"
