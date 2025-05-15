@@ -1,9 +1,6 @@
-use axum::{
-    Json, Router,
-    extract::State,
-    http::{Method, StatusCode, header},
-    routing::{get, post},
-};
+mod websocket;
+
+use axum::{Json, Router, extract::State, extract::ws::close_code, http::Method, routing::get};
 use base64::{Engine, engine::general_purpose};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
@@ -23,6 +20,7 @@ use serde_json::json;
 use std::env;
 use std::str::FromStr;
 use tower_http::cors::{Any, CorsLayer};
+use websocket::{WsCloseCode, handle_ws_upgrade};
 
 type ValidationResult = Result<
     (
@@ -32,7 +30,7 @@ type ValidationResult = Result<
         MlDsaVerifyingKey<MlDsa44>,
         MlDsaSignature<MlDsa44>,
     ),
-    StatusCode,
+    WsCloseCode,
 >;
 
 #[derive(Serialize, Deserialize)]
@@ -54,7 +52,7 @@ impl UserData {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct ProofRequest {
     bitcoin_signed_message: String,
     bitcoin_address: String,
@@ -72,50 +70,54 @@ struct UploadProofRequest {
 }
 
 // Macro to handle the common pattern of error checking
+#[macro_export]
 macro_rules! ok_or_bad_request {
     ($expr:expr, $err_msg:expr) => {
         match $expr {
             Ok(val) => val,
             Err(e) => {
                 eprintln!("{}: {}", $err_msg, e);
-                return Err(StatusCode::BAD_REQUEST);
+                return Err(close_code::POLICY);
             }
         }
     };
 }
 
-// Macro for simple error logging and returning BAD_REQUEST
+// Macro for simple error logging and returning INVALID code
+#[macro_export]
 macro_rules! bad_request {
     ($err_msg:expr) => {{
         eprintln!($err_msg);
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(close_code::POLICY);
     }};
     ($fmt:expr, $($arg:tt)*) => {{
         eprintln!($fmt, $($arg)*);
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(close_code::POLICY);
     }};
 }
 
-// Macro for simple error logging and returning INTERNAL_SERVER_ERROR
+// Macro for simple error logging and returning Internal Error code
+#[macro_export]
 macro_rules! internal_error {
     ($err_msg:expr) => {{
         eprintln!($err_msg);
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        return Err(close_code::ERROR);
     }};
     ($fmt:expr, $($arg:tt)*) => {{
         eprintln!($fmt, $($arg)*);
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        return Err(close_code::ERROR);
     }};
 }
 
-// Macro for handling Results that should return INTERNAL_SERVER_ERROR if Err
+// Macro for handling Results that should return Internal Error if Err
+#[macro_export]
 macro_rules! ok_or_internal_error {
     ($expr:expr, $err_msg:expr) => {
         match $expr {
             Ok(val) => val,
             Err(e) => {
                 eprintln!("{}: {}", $err_msg, e);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                return Err(close_code::ERROR);
             }
         }
     };
@@ -201,27 +203,30 @@ async fn main() {
     // Configure CORS to allow all origins but restrict headers
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([Method::POST])
-        .allow_headers([
-            header::CONTENT_TYPE, // For JSON requests
-            // These 3 headers may be present in CORS preflight OPTIONS requests:
-            header::ACCESS_CONTROL_REQUEST_METHOD,
-            header::ACCESS_CONTROL_REQUEST_HEADERS,
-            header::ORIGIN,
-        ]);
+        .allow_methods([Method::GET]);
 
     // build our application with routes and CORS
     let app = Router::new()
-        .route("/prove", post(prove))
         .route("/health", get(health))
+        .route("/prove", get(handle_ws_upgrade))
         .with_state(config)
         .layer(cors);
 
     println!("Server running on http://0.0.0.0:8008");
 
     // run our app with hyper, listening globally on port 8008
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8008").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = match tokio::net::TcpListener::bind("0.0.0.0:8008").await {
+        Ok(listener) => listener,
+        Err(e) => {
+            eprintln!("Failed to bind to port 8008: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(e) = axum::serve(listener, app).await {
+        eprintln!("Error starting server: {e}");
+        std::process::exit(1);
+    }
 }
 
 /// Health check endpoint.
@@ -238,10 +243,7 @@ async fn health(State(config): State<Config>) -> Json<serde_json::Value> {
     Json(body)
 }
 
-async fn prove(
-    State(config): State<Config>,
-    Json(proof_request): Json<ProofRequest>,
-) -> StatusCode {
+async fn prove(config: Config, proof_request: ProofRequest) -> WsCloseCode {
     // Log the received data
     println!(
         "Received proof request - Bitcoin Address: {}, ML-DSA Address: {}",
@@ -257,38 +259,38 @@ async fn prove(
         ml_dsa_signed_message,
     ) = match validate_inputs(&proof_request) {
         Ok(result) => result,
-        Err(status) => return status,
+        Err(code) => return code,
     };
 
     // Re-create the message that should have been signed by both keypairs
     let expected_message = generate_expected_message(&bitcoin_address, &ml_dsa_address);
 
     // Step 2: Verify Bitcoin ownership
-    if let Err(status) =
+    if let Err(code) =
         verify_bitcoin_ownership(&bitcoin_address, &bitcoin_signed_message, &expected_message)
     {
-        return status;
+        return code;
     }
 
     // Step 3: Verify ML-DSA ownership
-    if let Err(status) = verify_ml_dsa_ownership(
+    if let Err(code) = verify_ml_dsa_ownership(
         &ml_dsa_address,
         &ml_dsa_public_key,
         &ml_dsa_signed_message,
         &expected_message,
     ) {
-        return status;
+        return code;
     }
 
     // Step 4: Get attestation document with embedded addresses
     let attestation_doc_base64 =
         match embed_addresses_in_proof(&bitcoin_address, &ml_dsa_address).await {
             Ok(doc) => doc,
-            Err(status) => return status,
+            Err(code) => return code,
         };
 
     // Step 5: Upload to data layer
-    if let Err(status) = upload_to_data_layer(
+    if let Err(code) = upload_to_data_layer(
         &bitcoin_address,
         &ml_dsa_address,
         &attestation_doc_base64,
@@ -298,12 +300,12 @@ async fn prove(
     )
     .await
     {
-        return status;
+        return code;
     }
 
     // Success path
     println!("All verifications completed successfully");
-    StatusCode::NO_CONTENT
+    close_code::NORMAL
 }
 
 fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
@@ -444,7 +446,7 @@ fn verify_bitcoin_ownership(
     address: &BitcoinAddress,
     signature: &BitcoinMessageSignature,
     expected_message: &str,
-) -> Result<(), StatusCode> {
+) -> Result<(), WsCloseCode> {
     // Initialize secp256k1 context
     let secp = Secp256k1::verification_only();
 
@@ -505,7 +507,7 @@ fn verify_ml_dsa_ownership(
     verifying_key: &MlDsaVerifyingKey<MlDsa44>,
     signature: &MlDsaSignature<MlDsa44>,
     expected_message: &str,
-) -> Result<(), StatusCode> {
+) -> Result<(), WsCloseCode> {
     // Verify the signature
     ok_or_bad_request!(
         verifying_key.verify(expected_message.as_bytes(), signature),
@@ -533,7 +535,7 @@ fn verify_ml_dsa_ownership(
 async fn embed_addresses_in_proof(
     bitcoin_address: &BitcoinAddress,
     ml_dsa_address: &DecodedPqAddress,
-) -> Result<String, StatusCode> {
+) -> Result<String, WsCloseCode> {
     let client = Client::new();
 
     // Create and encode the user data struct
@@ -584,7 +586,7 @@ async fn upload_to_data_layer(
     version: &str,
     data_layer_url: &str,
     data_layer_api_key: &str,
-) -> Result<(), StatusCode> {
+) -> Result<(), WsCloseCode> {
     let client = Client::new();
 
     let request = UploadProofRequest {
@@ -620,13 +622,17 @@ async fn upload_to_data_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{response::IntoResponse, routing::post};
+    use axum::{http::StatusCode, response::IntoResponse, routing::post};
+    use futures_util::{SinkExt, StreamExt};
     use ml_dsa::{KeyGen, signature::Signer};
     use pq_address::{
         AddressParams as PqAddressParams, Network as PqNetwork, Version as PqVersion,
         encode_address as pq_encode_address,
     };
     use serial_test::serial;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
@@ -1104,13 +1110,12 @@ mod tests {
         assert_eq!(body["version"], TEST_VERSION);
     }
 
-    async fn run_end_to_end_test(
+    // Set up mock servers for end-to-end tests and return WebSocket connection
+    async fn set_up_end_to_end_test_servers(
         bitcoin_address: &str,
-        bitcoin_signed_message: &str,
-        ml_dsa_signed_message: &str,
         ml_dsa_address: &str,
-        ml_dsa_public_key: &str,
-    ) -> StatusCode {
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    {
         const TEST_VERSION: &str = "1.1.0";
 
         let bitcoin_address = bitcoin_address.to_string();
@@ -1161,6 +1166,126 @@ mod tests {
         // Give the servers a moment to start
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
+        // Create config
+        let config = Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: TEST_VERSION.to_string(),
+        };
+
+        // Start a WebSocket server with the main WebSocket handler
+        let app = Router::new().route(
+            "/prove",
+            axum::routing::get(websocket::handle_ws_upgrade).with_state(config),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Spawn the WebSocket server
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        // Give the server a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Connect to the WebSocket server
+        let ws_url = format!("ws://{addr}/prove");
+        let (ws_stream, _) = connect_async(ws_url)
+            .await
+            .expect("Failed to connect to WebSocket server");
+
+        ws_stream
+    }
+
+    async fn perform_correct_client_handshake(
+        ws_stream: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) -> Result<(), WsCloseCode> {
+        // Send correct handshake message
+        let handshake_json = r#"{"message":"hello"}"#;
+        ws_stream
+            .send(TungsteniteMessage::Text(handshake_json.into()))
+            .await
+            .unwrap();
+
+        // Receive handshake response
+        let response = ws_stream.next().await.unwrap().unwrap();
+        if let TungsteniteMessage::Text(text) = response {
+            // Parse the handshake response
+            let handshake_response: websocket::HandshakeResponse =
+                serde_json::from_str(&text).expect("Failed to parse handshake response");
+
+            // Verify the response message is "ack"
+            assert_eq!(
+                handshake_response.message, "ack",
+                "Handshake response should be 'ack'"
+            );
+            println!("Handshake successful");
+            Ok(())
+        } else {
+            // Unexpected response - this should never happen in tests
+            println!("Unexpected response type");
+            Err(close_code::ERROR)
+        }
+    }
+
+    // Send proof request and get response
+    async fn send_proof_request(
+        ws_stream: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        proof_request: &ProofRequest,
+    ) -> WsCloseCode {
+        // Construct proof request JSON explicitly
+        let proof_request_json = format!(
+            r#"{{
+            "bitcoin_address": "{}",
+            "bitcoin_signed_message": "{}",
+            "ml_dsa_address": "{}",
+            "ml_dsa_signed_message": "{}",
+            "ml_dsa_public_key": "{}"
+        }}"#,
+            proof_request.bitcoin_address,
+            proof_request.bitcoin_signed_message,
+            proof_request.ml_dsa_address,
+            proof_request.ml_dsa_signed_message,
+            proof_request.ml_dsa_public_key
+        );
+
+        ws_stream
+            .send(TungsteniteMessage::Text(proof_request_json.into()))
+            .await
+            .unwrap();
+
+        // Receive server's response (should be a close frame)
+        let message = ws_stream.next().await.unwrap().unwrap();
+        match message {
+            TungsteniteMessage::Close(Some(close_frame)) => {
+                // Return the close code from the server
+                u16::from(close_frame.code)
+            }
+            _ => {
+                // Unexpected response
+                close_code::ERROR
+            }
+        }
+    }
+
+    // Helper function that runs a complete end-to-end test using the three functions above
+    async fn run_end_to_end_test(
+        bitcoin_address: &str,
+        bitcoin_signed_message: &str,
+        ml_dsa_signed_message: &str,
+        ml_dsa_address: &str,
+        ml_dsa_public_key: &str,
+    ) -> WsCloseCode {
+        // Set up the test servers and get a WebSocket connection
+        let mut ws_stream = set_up_end_to_end_test_servers(bitcoin_address, ml_dsa_address).await;
+
+        // Create the proof request with the actual test data
         let proof_request = ProofRequest {
             bitcoin_address: bitcoin_address.to_string(),
             bitcoin_signed_message: bitcoin_signed_message.to_string(),
@@ -1169,16 +1294,13 @@ mod tests {
             ml_dsa_public_key: ml_dsa_public_key.to_string(),
         };
 
-        // Call the main function with the request
-        Box::pin(prove(
-            State(Config {
-                data_layer_url: "http://127.0.0.1:9998".to_string(),
-                data_layer_api_key: "mock_api_key".to_string(),
-                version: TEST_VERSION.to_string(),
-            }),
-            Json(proof_request),
-        ))
-        .await
+        // Perform the handshake
+        if let Err(code) = perform_correct_client_handshake(&mut ws_stream).await {
+            return code;
+        }
+
+        // Send the proof request and get the result
+        send_proof_request(&mut ws_stream, &proof_request).await
     }
 
     #[tokio::test]
@@ -1192,7 +1314,7 @@ mod tests {
             VALID_ML_DSA_PUBLIC_KEY,
         )
         .await;
-        assert_eq!(response, StatusCode::NO_CONTENT);
+        assert_eq!(response, close_code::NORMAL);
     }
 
     #[tokio::test]
@@ -1206,7 +1328,7 @@ mod tests {
             VALID_ML_DSA_PUBLIC_KEY,
         )
         .await;
-        assert_eq!(response, StatusCode::NO_CONTENT);
+        assert_eq!(response, close_code::NORMAL);
     }
 
     #[tokio::test]
@@ -1220,7 +1342,121 @@ mod tests {
             VALID_ML_DSA_PUBLIC_KEY,
         )
         .await;
-        assert_eq!(response, StatusCode::BAD_REQUEST);
+        assert_eq!(response, close_code::POLICY);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_invalid_handshake_message() {
+        // Set up the test servers
+        let mut ws_stream =
+            set_up_end_to_end_test_servers(VALID_BITCOIN_ADDRESS_P2PKH, VALID_ML_DSA_ADDRESS).await;
+
+        // Send incorrect handshake message directly with hardcoded JSON
+        let incorrect_json = r#"{"message":"wrong_message"}"#;
+        ws_stream
+            .send(TungsteniteMessage::Text(incorrect_json.into()))
+            .await
+            .unwrap();
+
+        // Expect close frame with POLICY code
+        let response = ws_stream.next().await.unwrap().unwrap();
+        match response {
+            TungsteniteMessage::Close(Some(close_frame)) => {
+                assert_eq!(
+                    u16::from(close_frame.code),
+                    close_code::POLICY,
+                    "Should close with POLICY code on invalid handshake message"
+                );
+            }
+            _ => panic!("Expected close frame, got something else"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_binary_message_instead_of_text() {
+        // Set up the test servers
+        let mut ws_stream =
+            set_up_end_to_end_test_servers(VALID_BITCOIN_ADDRESS_P2PKH, VALID_ML_DSA_ADDRESS).await;
+
+        // Send a binary message instead of text for handshake
+        ws_stream
+            .send(TungsteniteMessage::Binary(vec![1, 2, 3].into()))
+            .await
+            .unwrap();
+
+        // Expect close frame with POLICY code
+        let message = ws_stream.next().await.unwrap().unwrap();
+        match message {
+            TungsteniteMessage::Close(Some(close_frame)) => {
+                assert_eq!(
+                    u16::from(close_frame.code),
+                    close_code::POLICY,
+                    "Should close with POLICY code on binary handshake message"
+                );
+            }
+            _ => panic!("Expected close frame, got something else"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_invalid_handshake_format() {
+        // Set up the test servers
+        let mut ws_stream =
+            set_up_end_to_end_test_servers(VALID_BITCOIN_ADDRESS_P2PKH, VALID_ML_DSA_ADDRESS).await;
+
+        // Send malformed handshake message (missing required field)
+        let incorrect_format = r#"{"wrong_field": "hello"}"#;
+        ws_stream
+            .send(TungsteniteMessage::Text(incorrect_format.into()))
+            .await
+            .unwrap();
+
+        // Expect close frame with POLICY code
+        let response = ws_stream.next().await.unwrap().unwrap();
+        match response {
+            TungsteniteMessage::Close(Some(close_frame)) => {
+                assert_eq!(
+                    u16::from(close_frame.code),
+                    close_code::POLICY,
+                    "Should close with POLICY code on malformed handshake JSON"
+                );
+            }
+            _ => panic!("Expected close frame, got something else"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_invalid_proof_request_format() {
+        // Set up the test servers
+        let mut ws_stream =
+            set_up_end_to_end_test_servers(VALID_BITCOIN_ADDRESS_P2PKH, VALID_ML_DSA_ADDRESS).await;
+
+        // Perform valid handshake
+        let handshake_result = perform_correct_client_handshake(&mut ws_stream).await;
+        assert!(handshake_result.is_ok(), "Valid handshake should succeed");
+
+        // Send invalid JSON as proof request
+        ws_stream
+            .send(TungsteniteMessage::Text("not valid json".into()))
+            .await
+            .unwrap();
+
+        // Expect close frame with POLICY code
+        let message = ws_stream.next().await.unwrap().unwrap();
+        match message {
+            TungsteniteMessage::Close(Some(close_frame)) => {
+                assert_eq!(
+                    u16::from(close_frame.code),
+                    close_code::POLICY,
+                    "Should close with POLICY code on invalid proof request"
+                );
+            }
+            _ => panic!("Expected close frame, got something else"),
+        }
     }
 
     #[test]
