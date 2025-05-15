@@ -15,7 +15,7 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 // ML-KEM-768 params
-const ML_KEM_768_PUBLIC_KEY_LENGTH: usize = 1184;
+const ML_KEM_768_ENCAPSULATION_KEY_LENGTH: usize = 1184;
 
 // Constants for timeouts
 const HANDSHAKE_TIMEOUT_SECS: u64 = 30; // 30 seconds for initial handshake
@@ -47,7 +47,7 @@ macro_rules! with_timeout {
 /// Message sent by client to initiate handshake
 #[derive(Serialize, Deserialize)]
 pub struct HandshakeMessage {
-    pub public_key: String, // Base64-encoded ML-KEM public key from client
+    pub encapsulation_key: String, // Base64-encoded ML-KEM encapsulation key from client
 }
 
 /// Response sent by server to acknowledge handshake
@@ -120,34 +120,34 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
 
     println!("Received valid handshake message");
 
-    // Decode the base64 public key from the client
-    let public_key_bytes = ok_or_bad_request!(
-        general_purpose::STANDARD.decode(&handshake_request.public_key),
-        "Failed to decode base64 public key"
+    // Decode the base64 encapsulation key from the client
+    let encap_key_bytes = ok_or_bad_request!(
+        general_purpose::STANDARD.decode(&handshake_request.encapsulation_key),
+        "Failed to decode base64 encapsulation key"
     );
 
-    // Verify the public key has the correct length for ML-KEM-768
-    if public_key_bytes.len() != ML_KEM_768_PUBLIC_KEY_LENGTH {
+    // Verify the encapsulation key has the correct length for ML-KEM-768
+    if encap_key_bytes.len() != ML_KEM_768_ENCAPSULATION_KEY_LENGTH {
         bad_request!(
-            "Invalid ML-KEM-768 public key length: expected {} bytes, got {}",
-            ML_KEM_768_PUBLIC_KEY_LENGTH,
-            public_key_bytes.len()
+            "Invalid ML-KEM-768 encapsulation key length: expected {} bytes, got {}",
+            ML_KEM_768_ENCAPSULATION_KEY_LENGTH,
+            encap_key_bytes.len()
         );
     }
 
-    // Convert bytes to ML-KEM public key using TryFrom (the proper way)
-    let public_key_array: Encoded<EncapsulationKey<MlKem768Params>> = ok_or_bad_request!(
-        public_key_bytes.as_slice().try_into(),
-        "Failed to convert public key bytes to encoded type"
+    // Convert bytes to ML-KEM encapsulation key using TryFrom
+    let encap_key_array: Encoded<EncapsulationKey<MlKem768Params>> = ok_or_bad_request!(
+        encap_key_bytes.as_slice().try_into(),
+        "Failed to convert encapsulation key bytes to encoded type"
     );
 
     // Create the encapsulation key from the array
-    let public_key = EncapsulationKey::<MlKem768Params>::from_bytes(&public_key_array);
+    let encap_key = EncapsulationKey::<MlKem768Params>::from_bytes(&encap_key_array);
 
     // Generate the shared secret and ciphertext
     let mut rng = StdRng::from_entropy();
     let (ciphertext, shared_secret): (Ciphertext<MlKem768>, SharedKey<MlKem768>) =
-        match public_key.encapsulate(&mut rng) {
+        match encap_key.encapsulate(&mut rng) {
             Ok(result) => result,
             Err(_) => {
                 eprintln!("Failed to encapsulate shared secret");

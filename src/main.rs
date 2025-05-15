@@ -1209,11 +1209,11 @@ mod tests {
         let mut rng = StdRng::from_entropy();
         let (decapsulation_key, encapsulation_key) = MlKem768::generate(&mut rng);
 
-        // Base64 encode the public key
-        let public_key_base64 = general_purpose::STANDARD.encode(encapsulation_key.as_bytes());
+        // Base64 encode the encapsulation key
+        let encap_key_base64 = general_purpose::STANDARD.encode(encapsulation_key.as_bytes());
 
-        // Send handshake message with ML-KEM public key
-        let handshake_json = format!(r#"{{"public_key":"{}"}}"#, public_key_base64);
+        // Send handshake message with ML-KEM encapsulation key
+        let handshake_json = format!(r#"{{"encapsulation_key":"{}"}}"#, encap_key_base64);
         ws_stream
             .send(TungsteniteMessage::Text(handshake_json.into()))
             .await
