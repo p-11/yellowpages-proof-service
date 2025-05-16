@@ -628,10 +628,12 @@ mod tests {
     use axum::{http::StatusCode, response::IntoResponse, routing::post};
     use futures_util::{SinkExt, StreamExt};
     use ml_dsa::{KeyGen, signature::Signer};
+    use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, kem::Decapsulate};
     use pq_address::{
         AddressParams as PqAddressParams, Network as PqNetwork, Version as PqVersion,
         encode_address as pq_encode_address,
     };
+    use rand::{SeedableRng, rngs::StdRng};
     use serial_test::serial;
     use tokio::net::TcpListener;
     use tokio_tungstenite::connect_async;
@@ -1210,8 +1212,14 @@ mod tests {
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
     ) -> Result<(), WsCloseCode> {
-        // Send correct handshake message
-        let handshake_json = r#"{"message":"hello"}"#;
+        let mut rng = StdRng::from_entropy();
+        let (decapsulation_key, encapsulation_key) = MlKem768::generate(&mut rng);
+
+        // Base64 encode the encapsulation key
+        let encap_key_base64 = general_purpose::STANDARD.encode(encapsulation_key.as_bytes());
+
+        // Send handshake message with ML-KEM encapsulation key
+        let handshake_json = format!(r#"{{"ml_kem_768_encapsulation_key":"{encap_key_base64}"}}"#);
         ws_stream
             .send(TungsteniteMessage::Text(handshake_json.into()))
             .await
@@ -1224,12 +1232,28 @@ mod tests {
             let handshake_response: websocket::HandshakeResponse =
                 serde_json::from_str(&text).expect("Failed to parse handshake response");
 
-            // Verify the response message is "ack"
-            assert_eq!(
-                handshake_response.message, "ack",
-                "Handshake response should be 'ack'"
+            // Verify the response contains a ciphertext
+            assert!(
+                !handshake_response.ml_kem_768_ciphertext.is_empty(),
+                "Ciphertext should not be empty"
             );
-            println!("Handshake successful");
+
+            // Decrypt the ciphertext to get the shared secret
+            let ciphertext_bytes = general_purpose::STANDARD
+                .decode(&handshake_response.ml_kem_768_ciphertext)
+                .expect("Failed to decode ciphertext");
+
+            // Convert to ML-KEM ciphertext type
+            let ciphertext: Ciphertext<MlKem768> = ciphertext_bytes
+                .as_slice()
+                .try_into()
+                .expect("Invalid ciphertext format");
+
+            // Decapsulate to get the shared secret
+            let _shared_secret = decapsulation_key
+                .decapsulate(&ciphertext)
+                .expect("Failed to decapsulate");
+
             Ok(())
         } else {
             // Unexpected response - this should never happen in tests
@@ -1360,8 +1384,8 @@ mod tests {
             set_up_end_to_end_test_servers(VALID_BITCOIN_ADDRESS_P2PKH, VALID_ML_DSA_44_ADDRESS)
                 .await;
 
-        // Send incorrect handshake message directly with hardcoded JSON
-        let incorrect_json = r#"{"message":"wrong_message"}"#;
+        // Send incorrect handshake message with invalid public key
+        let incorrect_json = r#"{"public_key":"invalid_base64"}"#;
         ws_stream
             .send(TungsteniteMessage::Text(incorrect_json.into()))
             .await
@@ -1374,7 +1398,7 @@ mod tests {
                 assert_eq!(
                     u16::from(close_frame.code),
                     close_code::POLICY,
-                    "Should close with POLICY code on invalid handshake message"
+                    "Should close with POLICY code on invalid public key"
                 );
             }
             _ => panic!("Expected close frame, got something else"),
