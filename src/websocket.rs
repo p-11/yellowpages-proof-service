@@ -16,6 +16,9 @@ use tokio::time::timeout;
 
 // ML-KEM-768 params
 const ML_KEM_768_ENCAPSULATION_KEY_LENGTH: usize = 1184;
+// Base64 encoding increases size by ~33%, so the encoded string should be ~1.33x the raw bytes
+// Adding a reasonable buffer, the maximum expected length would be around 1600 bytes
+const MAX_BASE64_ML_KEM_768_ENCAPSULATION_KEY_LENGTH: usize = 1600;
 
 // Constants for timeouts
 const HANDSHAKE_TIMEOUT_SECS: u64 = 30; // 30 seconds for initial handshake
@@ -124,6 +127,15 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
         serde_json::from_str(&handshake_text),
         "Failed to parse handshake message JSON"
     );
+
+    // Check the length of the base64 string before decoding
+    if handshake_request.encapsulation_key.len() > MAX_BASE64_ML_KEM_768_ENCAPSULATION_KEY_LENGTH {
+        bad_request!(
+            "Base64 encapsulation key is too long: {} bytes (max allowed: {})",
+            handshake_request.encapsulation_key.len(),
+            MAX_BASE64_ML_KEM_768_ENCAPSULATION_KEY_LENGTH
+        );
+    }
 
     // Decode the base64 encapsulation key from the client
     let encapsulation_key_bytes = ok_or_bad_request!(
