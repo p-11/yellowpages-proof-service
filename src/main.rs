@@ -1213,7 +1213,7 @@ mod tests {
         let encap_key_base64 = general_purpose::STANDARD.encode(encapsulation_key.as_bytes());
 
         // Send handshake message with ML-KEM encapsulation key
-        let handshake_json = format!(r#"{{"encapsulation_key":"{encap_key_base64}"}}"#);
+        let handshake_json = format!(r#"{{"ml_kem_768_encapsulation_key":"{encap_key_base64}"}}"#);
         ws_stream
             .send(TungsteniteMessage::Text(handshake_json.into()))
             .await
@@ -1228,13 +1228,13 @@ mod tests {
 
             // Verify the response contains a ciphertext
             assert!(
-                !handshake_response.ciphertext.is_empty(),
+                !handshake_response.ml_kem_768_ciphertext.is_empty(),
                 "Ciphertext should not be empty"
             );
 
             // Decrypt the ciphertext to get the shared secret
             let ciphertext_bytes = general_purpose::STANDARD
-                .decode(&handshake_response.ciphertext)
+                .decode(&handshake_response.ml_kem_768_ciphertext)
                 .expect("Failed to decode ciphertext");
 
             // Convert to ML-KEM ciphertext type

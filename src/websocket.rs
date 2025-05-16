@@ -50,13 +50,13 @@ macro_rules! with_timeout {
 /// Message sent by client to initiate handshake
 #[derive(Serialize, Deserialize)]
 pub struct HandshakeMessage {
-    pub encapsulation_key: String, // Base64-encoded ML-KEM encapsulation key from client
+    pub ml_kem_768_encapsulation_key: String, // Base64-encoded ML-KEM encapsulation key from client
 }
 
 /// Response sent by server to acknowledge handshake
 #[derive(Serialize, Deserialize)]
 pub struct HandshakeResponse {
-    pub ciphertext: String, // Base64-encoded ML-KEM ciphertext
+    pub ml_kem_768_ciphertext: String, // Base64-encoded ML-KEM ciphertext
 }
 
 /// WebSocket handler that implements a stateful handshake followed by proof verification
@@ -129,17 +129,19 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
     );
 
     // Check the length of the base64 string before decoding
-    if handshake_request.encapsulation_key.len() > MAX_BASE64_ML_KEM_768_ENCAPSULATION_KEY_LENGTH {
+    if handshake_request.ml_kem_768_encapsulation_key.len()
+        > MAX_BASE64_ML_KEM_768_ENCAPSULATION_KEY_LENGTH
+    {
         bad_request!(
             "Base64 encapsulation key is too long: {} bytes (max allowed: {})",
-            handshake_request.encapsulation_key.len(),
+            handshake_request.ml_kem_768_encapsulation_key.len(),
             MAX_BASE64_ML_KEM_768_ENCAPSULATION_KEY_LENGTH
         );
     }
 
     // Decode the base64 encapsulation key from the client
     let encapsulation_key_bytes = ok_or_bad_request!(
-        general_purpose::STANDARD.decode(&handshake_request.encapsulation_key),
+        general_purpose::STANDARD.decode(&handshake_request.ml_kem_768_encapsulation_key),
         "Failed to decode base64 encapsulation key"
     );
 
@@ -178,7 +180,7 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
 
     // Create and send the response
     let handshake_response = HandshakeResponse {
-        ciphertext: ciphertext_base64,
+        ml_kem_768_ciphertext: ciphertext_base64,
     };
 
     let response_json = ok_or_internal_error!(
