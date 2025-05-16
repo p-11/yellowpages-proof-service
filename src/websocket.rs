@@ -118,8 +118,6 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
         "Failed to parse handshake message JSON"
     );
 
-    println!("Received valid handshake message");
-
     // Decode the base64 encapsulation key from the client
     let encap_key_bytes = ok_or_bad_request!(
         general_purpose::STANDARD.decode(&handshake_request.encapsulation_key),
@@ -140,6 +138,8 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
         encap_key_bytes.as_slice().try_into(),
         "Failed to convert encapsulation key bytes to encoded type"
     );
+
+    println!("Received valid handshake message");
 
     // Create the encapsulation key from the array
     let encap_key = EncapsulationKey::<MlKem768Params>::from_bytes(&encap_key_array);
