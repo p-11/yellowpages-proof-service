@@ -1213,7 +1213,7 @@ mod tests {
         let encap_key_base64 = general_purpose::STANDARD.encode(encapsulation_key.as_bytes());
 
         // Send handshake message with ML-KEM encapsulation key
-        let handshake_json = format!(r#"{{"encapsulation_key":"{}"}}"#, encap_key_base64);
+        let handshake_json = format!(r#"{{"encapsulation_key":"{encap_key_base64}"}}"#);
         ws_stream
             .send(TungsteniteMessage::Text(handshake_json.into()))
             .await

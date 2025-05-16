@@ -97,7 +97,14 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
     send_close_frame(&mut socket, close_code).await;
 }
 
-/// Performs the initial WebSocket handshake
+/// Performs the initial WebSocket handshake using ML-KEM-768 for post-quantum key exchange
+///
+/// This function:
+/// 1. Receives an encapsulation key from the client
+/// 2. Validates the key format and size
+/// 3. Generates a shared secret and ciphertext using ML-KEM-768
+/// 4. Sends the ciphertext back to the client
+/// 5. Returns the shared secret for potential future use
 async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>, WsCloseCode> {
     // Wait for message with a timeout
     let receive_result = with_timeout!(HANDSHAKE_TIMEOUT_SECS, socket.recv(), "Handshake message");
@@ -119,44 +126,43 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
     );
 
     // Decode the base64 encapsulation key from the client
-    let encap_key_bytes = ok_or_bad_request!(
+    let encapsulation_key_bytes = ok_or_bad_request!(
         general_purpose::STANDARD.decode(&handshake_request.encapsulation_key),
         "Failed to decode base64 encapsulation key"
     );
 
     // Verify the encapsulation key has the correct length for ML-KEM-768
-    if encap_key_bytes.len() != ML_KEM_768_ENCAPSULATION_KEY_LENGTH {
+    if encapsulation_key_bytes.len() != ML_KEM_768_ENCAPSULATION_KEY_LENGTH {
         bad_request!(
             "Invalid ML-KEM-768 encapsulation key length: expected {} bytes, got {}",
             ML_KEM_768_ENCAPSULATION_KEY_LENGTH,
-            encap_key_bytes.len()
+            encapsulation_key_bytes.len()
         );
     }
 
     // Convert bytes to ML-KEM encapsulation key using TryFrom
-    let encap_key_array: Encoded<EncapsulationKey<MlKem768Params>> = ok_or_bad_request!(
-        encap_key_bytes.as_slice().try_into(),
+    let encoded_encapsulation_key: Encoded<EncapsulationKey<MlKem768Params>> = ok_or_bad_request!(
+        encapsulation_key_bytes.as_slice().try_into(),
         "Failed to convert encapsulation key bytes to encoded type"
     );
 
     println!("Received valid handshake message");
 
     // Create the encapsulation key from the array
-    let encap_key = EncapsulationKey::<MlKem768Params>::from_bytes(&encap_key_array);
+    let encapsulation_key =
+        EncapsulationKey::<MlKem768Params>::from_bytes(&encoded_encapsulation_key);
 
     // Generate the shared secret and ciphertext
     let mut rng = StdRng::from_entropy();
-    let (ciphertext, shared_secret): (Ciphertext<MlKem768>, SharedKey<MlKem768>) =
-        match encap_key.encapsulate(&mut rng) {
-            Ok(result) => result,
-            Err(_) => {
-                eprintln!("Failed to encapsulate shared secret");
-                return Err(close_code::ERROR);
-            }
-        };
+    let Ok((ciphertext, shared_secret)): Result<(Ciphertext<MlKem768>, SharedKey<MlKem768>), _> =
+        encapsulation_key.encapsulate(&mut rng)
+    else {
+        eprintln!("Failed to encapsulate shared secret");
+        return Err(close_code::ERROR);
+    };
 
     // Encode the ciphertext to base64
-    let ciphertext_base64 = general_purpose::STANDARD.encode(ciphertext.to_vec());
+    let ciphertext_base64 = general_purpose::STANDARD.encode(ciphertext);
 
     // Create and send the response
     let handshake_response = HandshakeResponse {
