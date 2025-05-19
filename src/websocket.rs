@@ -1,4 +1,7 @@
-use crate::{Config, ProofRequest, bad_request, ok_or_bad_request, ok_or_internal_error, prove};
+use crate::{
+    Config, ProofRequest, bad_request, internal_error, ok_or_bad_request, ok_or_internal_error,
+    prove,
+};
 use aes_gcm::{
     Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
     aead::{Aead, KeyInit},
@@ -247,12 +250,11 @@ async fn receive_proof_request(
 
     // Double-check shared secret length before creating AES key, to prevent from_slice panic
     if shared_secret.len() != AES_256_KEY_LENGTH {
-        eprintln!(
+        internal_error!(
             "Invalid shared secret length: expected {} bytes, got {}",
             AES_256_KEY_LENGTH,
             shared_secret.len()
         );
-        return Err(close_code::ERROR);
     }
 
     // Create AES-GCM cipher using the shared secret
