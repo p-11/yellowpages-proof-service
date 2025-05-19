@@ -1,6 +1,6 @@
 use crate::{Config, ProofRequest, bad_request, ok_or_bad_request, ok_or_internal_error, prove};
 use aes_gcm::{
-    Aes256Gcm, Key, Nonce,
+    Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
     aead::{Aead, KeyInit},
 };
 use axum::{
@@ -32,11 +32,11 @@ const PROOF_REQUEST_TIMEOUT_SECS: u64 = 30; // 30 seconds for proof submission
 const TIMEOUT_CLOSE_CODE: u16 = 4000; // Custom code for timeout errors
 
 // Constants for AES-GCM
-pub const AES_GCM_NONCE_LENGTH: usize = 12; // 96 bits
+pub const AES_GCM_NONCE_LENGTH: usize = 12; // length in bytes
 // Maximum size for encrypted proof request (empirically determined)
 // This includes the nonce (12 bytes), the AES-GCM tag (16 bytes), and the encrypted data
 const MAX_ENCRYPTED_PROOF_REQUEST_LENGTH: usize = 5500;
-const AES_256_KEY_LENGTH: usize = 32; // 256 bits
+const AES_256_KEY_LENGTH: usize = 32; // length in bytes
 
 /// Type alias for WebSocket close codes
 pub type WsCloseCode = u16;
@@ -242,7 +242,7 @@ async fn receive_proof_request(
 
     // Extract nonce and ciphertext
     let (nonce_bytes, ciphertext) = encrypted_data.split_at(AES_GCM_NONCE_LENGTH);
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = Aes256GcmNonce::from_slice(nonce_bytes);
 
     // Double-check shared secret length before creating AES key, to prevent from_slice panic
     if shared_secret.len() != AES_256_KEY_LENGTH {
@@ -255,7 +255,7 @@ async fn receive_proof_request(
     }
 
     // Create AES-GCM cipher using the shared secret
-    let key = Key::<Aes256Gcm>::from_slice(&shared_secret);
+    let key = Aes256GcmKey::<Aes256Gcm>::from_slice(&shared_secret);
     let cipher = Aes256Gcm::new(key);
 
     // Decrypt the data

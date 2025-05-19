@@ -1,5 +1,9 @@
 mod websocket;
 
+use aes_gcm::{
+    Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
+    aead::{Aead, KeyInit},
+};
 use axum::{Json, Router, extract::State, extract::ws::close_code, http::Method, routing::get};
 use base64::{Engine, engine::general_purpose};
 use bitcoin::hashes::{Hash, sha256};
@@ -626,7 +630,7 @@ async fn upload_to_data_layer(
 mod tests {
     use super::*;
     use aes_gcm::{
-        Aes256Gcm, Key, Nonce,
+        Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
         aead::{Aead, KeyInit},
     };
     use axum::{http::StatusCode, response::IntoResponse, routing::post};
@@ -1294,14 +1298,14 @@ mod tests {
         let proof_request_bytes = proof_request_json.as_bytes();
 
         // Create AES-GCM cipher
-        let key = Key::<Aes256Gcm>::from_slice(&shared_secret);
+        let key = Aes256GcmKey::<Aes256Gcm>::from_slice(&shared_secret);
         let cipher = Aes256Gcm::new(key);
 
         // Generate a random nonce
         let mut rng = StdRng::from_entropy();
         let mut nonce_bytes = [0u8; AES_GCM_NONCE_LENGTH];
         rng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Aes256GcmNonce::from_slice(&nonce_bytes);
 
         // Encrypt the proof request
         let ciphertext = cipher
