@@ -1273,10 +1273,8 @@ mod tests {
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
         proof_request: &ProofRequest,
-        shared_secret: &SharedKey<MlKem768>,
+        shared_secret: SharedKey<MlKem768>,
     ) -> WsCloseCode {
-        // Serialize the proof request to JSON
-        let proof_request_json = serde_json::to_vec(&proof_request).unwrap();
         // Construct proof request JSON explicitly
         let proof_request_json = format!(
             r#"{{
@@ -1294,7 +1292,7 @@ mod tests {
         );
 
         // Create AES-GCM cipher
-        let key = Key::<Aes256Gcm>::from_slice(shared_secret);
+        let key = Key::<Aes256Gcm>::from_slice(&shared_secret);
         let cipher = Aes256Gcm::new(key);
 
         // Generate a random nonce
@@ -1354,13 +1352,14 @@ mod tests {
             ml_dsa_44_public_key: ml_dsa_44_public_key.to_string(),
         };
 
-        // Perform the handshake
-        if let Err(code) = perform_correct_client_handshake(&mut ws_stream).await {
-            return code;
-        }
+        // Perform the handshake and get the shared secret
+        let shared_secret = match perform_correct_client_handshake(&mut ws_stream).await {
+            Ok(secret) => secret,
+            Err(code) => return code,
+        };
 
         // Send the proof request and get the result
-        send_proof_request(&mut ws_stream, &proof_request).await
+        send_proof_request(&mut ws_stream, &proof_request, shared_secret).await
     }
 
     #[tokio::test]
