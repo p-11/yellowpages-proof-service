@@ -1,4 +1,11 @@
-use crate::{Config, ProofRequest, bad_request, ok_or_bad_request, ok_or_internal_error, prove};
+use crate::{
+    Config, ProofRequest, bad_request, internal_error, ok_or_bad_request, ok_or_internal_error,
+    prove,
+};
+use aes_gcm::{
+    Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
+    aead::{Aead, KeyInit},
+};
 use axum::{
     extract::State,
     extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade, close_code},
@@ -26,6 +33,13 @@ const PROOF_REQUEST_TIMEOUT_SECS: u64 = 30; // 30 seconds for proof submission
 
 // Custom close code in the private range 4000-4999
 const TIMEOUT_CLOSE_CODE: u16 = 4000; // Custom code for timeout errors
+
+// Constants for AES-GCM
+pub const AES_GCM_NONCE_LENGTH: usize = 12; // length in bytes
+// Maximum size for encrypted proof request (empirically determined)
+// This includes the nonce (12 bytes), the AES-GCM tag (16 bytes), and the encrypted data
+const MAX_ENCRYPTED_PROOF_REQUEST_LENGTH: usize = 5500;
+const AES_256_KEY_LENGTH: usize = 32; // length in bytes
 
 /// Type alias for WebSocket close codes
 pub type WsCloseCode = u16;
@@ -72,7 +86,7 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
     println!("WebSocket connection established");
 
     // Step 1: Perform handshake and get the shared secret
-    let _shared_secret = match perform_handshake(&mut socket).await {
+    let shared_secret = match perform_handshake(&mut socket).await {
         Ok(secret) => secret,
         Err(error_code) => {
             send_close_frame(&mut socket, error_code).await;
@@ -81,7 +95,7 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
     };
 
     // Step 2: Receive the proof request
-    let proof_request = match receive_proof_request(&mut socket).await {
+    let proof_request = match receive_proof_request(&mut socket, shared_secret).await {
         Ok(request) => request,
         Err(error_code) => {
             send_close_frame(&mut socket, error_code).await;
@@ -199,8 +213,11 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
     Ok(shared_secret)
 }
 
-/// Receives and validates a proof request from the WebSocket
-async fn receive_proof_request(socket: &mut WebSocket) -> Result<ProofRequest, WsCloseCode> {
+/// Receives and validates an AES-256-GCM encrypted proof request from the WebSocket
+async fn receive_proof_request(
+    socket: &mut WebSocket,
+    shared_secret: SharedKey<MlKem768>,
+) -> Result<ProofRequest, WsCloseCode> {
     // Wait for message with a timeout
     let receive_result = with_timeout!(PROOF_REQUEST_TIMEOUT_SECS, socket.recv(), "Proof request");
 
@@ -209,15 +226,51 @@ async fn receive_proof_request(socket: &mut WebSocket) -> Result<ProofRequest, W
         bad_request!("No proof request received, client disconnected");
     };
 
-    // Ensure message is valid
-    let Ok(WsMessage::Text(request_text)) = received_message else {
-        bad_request!("Expected text message for proof request, got something else");
+    // Ensure message is binary (encrypted data)
+    let Ok(WsMessage::Binary(aes_256_gcm_encrypted_data)) = received_message else {
+        bad_request!("Expected binary message for encrypted proof request, got something else");
     };
 
-    // Parse proof request
+    // The first AES_GCM_NONCE_LENGTH bytes are the nonce
+    if aes_256_gcm_encrypted_data.len() <= AES_GCM_NONCE_LENGTH {
+        bad_request!("Encrypted data too short to contain nonce");
+    }
+    if aes_256_gcm_encrypted_data.len() > MAX_ENCRYPTED_PROOF_REQUEST_LENGTH {
+        bad_request!(
+            "Encrypted data too large: {} bytes (max allowed: {})",
+            aes_256_gcm_encrypted_data.len(),
+            MAX_ENCRYPTED_PROOF_REQUEST_LENGTH
+        );
+    }
+
+    // Extract nonce and ciphertext
+    let (aes_256_gcm_nonce_bytes, aes_256_gcm_ciphertext) =
+        aes_256_gcm_encrypted_data.split_at(AES_GCM_NONCE_LENGTH);
+    let aes_256_gcm_nonce = Aes256GcmNonce::from_slice(aes_256_gcm_nonce_bytes);
+
+    // Double-check shared secret length before creating AES key, to prevent from_slice panic
+    if shared_secret.len() != AES_256_KEY_LENGTH {
+        internal_error!(
+            "Invalid shared secret length: expected {} bytes, got {}",
+            AES_256_KEY_LENGTH,
+            shared_secret.len()
+        );
+    }
+
+    // Create AES-GCM cipher using the shared secret
+    let aes_256_gcm_key = Aes256GcmKey::<Aes256Gcm>::from_slice(&shared_secret);
+    let aes_256_gcm_cipher = Aes256Gcm::new(aes_256_gcm_key);
+
+    // Decrypt the data
+    let decrypted_bytes = ok_or_bad_request!(
+        aes_256_gcm_cipher.decrypt(aes_256_gcm_nonce, aes_256_gcm_ciphertext),
+        "Failed to decrypt proof request"
+    );
+
+    // Parse the decrypted data as a ProofRequest
     let proof_request = ok_or_bad_request!(
-        serde_json::from_str(&request_text),
-        "Failed to parse proof request JSON"
+        serde_json::from_slice(&decrypted_bytes),
+        "Failed to parse decrypted proof request JSON"
     );
 
     Ok(proof_request)
