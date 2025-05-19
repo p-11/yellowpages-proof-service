@@ -628,16 +628,21 @@ mod tests {
     use axum::{http::StatusCode, response::IntoResponse, routing::post};
     use futures_util::{SinkExt, StreamExt};
     use ml_dsa::{KeyGen, signature::Signer};
-    use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, kem::Decapsulate};
+    use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, kem::Decapsulate, SharedKey};
     use pq_address::{
         AddressParams as PqAddressParams, Network as PqNetwork, Version as PqVersion,
         encode_address as pq_encode_address,
     };
-    use rand::{SeedableRng, rngs::StdRng};
+    use rand::{SeedableRng, rngs::StdRng, RngCore};
     use serial_test::serial;
     use tokio::net::TcpListener;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
+    use aes_gcm::{
+        aead::{Aead, KeyInit},
+        Aes256Gcm, Key, Nonce,
+    };
+    use websocket::AES_GCM_NONCE_LENGTH;
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
@@ -1211,7 +1216,7 @@ mod tests {
         ws_stream: &mut tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
-    ) -> Result<(), WsCloseCode> {
+    ) -> Result<SharedKey<MlKem768>, WsCloseCode> {
         let mut rng = StdRng::from_entropy();
         let (decapsulation_key, encapsulation_key) = MlKem768::generate(&mut rng);
 
@@ -1250,11 +1255,11 @@ mod tests {
                 .expect("Invalid ciphertext format");
 
             // Decapsulate to get the shared secret
-            let _shared_secret = decapsulation_key
+            let shared_secret = decapsulation_key
                 .decapsulate(&ciphertext)
                 .expect("Failed to decapsulate");
 
-            Ok(())
+            Ok(shared_secret)
         } else {
             // Unexpected response - this should never happen in tests
             println!("Unexpected response type");
@@ -1268,7 +1273,10 @@ mod tests {
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
         proof_request: &ProofRequest,
+        shared_secret: &SharedKey<MlKem768>,
     ) -> WsCloseCode {
+        // Serialize the proof request to JSON
+        let proof_request_json = serde_json::to_vec(&proof_request).unwrap();
         // Construct proof request JSON explicitly
         let proof_request_json = format!(
             r#"{{
@@ -1285,8 +1293,29 @@ mod tests {
             proof_request.ml_dsa_44_public_key
         );
 
+        // Create AES-GCM cipher
+        let key = Key::<Aes256Gcm>::from_slice(shared_secret);
+        let cipher = Aes256Gcm::new(key);
+
+        // Generate a random nonce
+        let mut rng = StdRng::from_entropy();
+        let mut nonce_bytes = [0u8; AES_GCM_NONCE_LENGTH];
+        rng.fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        // Encrypt the proof request
+        let ciphertext = cipher
+            .encrypt(nonce, proof_request_json.as_ref())
+            .expect("Failed to encrypt proof request");
+
+        // Combine nonce and ciphertext into final message
+        let mut encrypted_message = Vec::with_capacity(AES_GCM_NONCE_LENGTH + ciphertext.len());
+        encrypted_message.extend_from_slice(&nonce_bytes);
+        encrypted_message.extend_from_slice(&ciphertext);
+
+        // Send the encrypted message
         ws_stream
-            .send(TungsteniteMessage::Text(proof_request_json.into()))
+            .send(TungsteniteMessage::Binary(encrypted_message.into()))
             .await
             .unwrap();
 

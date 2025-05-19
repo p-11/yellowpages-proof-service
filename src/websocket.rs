@@ -1,4 +1,8 @@
 use crate::{Config, ProofRequest, bad_request, ok_or_bad_request, ok_or_internal_error, prove};
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Key, Nonce,
+};
 use axum::{
     extract::State,
     extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade, close_code},
@@ -26,6 +30,10 @@ const PROOF_REQUEST_TIMEOUT_SECS: u64 = 30; // 30 seconds for proof submission
 
 // Custom close code in the private range 4000-4999
 const TIMEOUT_CLOSE_CODE: u16 = 4000; // Custom code for timeout errors
+
+// Constants for AES-GCM
+pub const AES_GCM_NONCE_LENGTH: usize = 12; // 96 bits
+pub const AES_GCM_TAG_LENGTH: usize = 16; // 128 bits
 
 /// Type alias for WebSocket close codes
 pub type WsCloseCode = u16;
@@ -72,7 +80,7 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
     println!("WebSocket connection established");
 
     // Step 1: Perform handshake and get the shared secret
-    let _shared_secret = match perform_handshake(&mut socket).await {
+    let shared_secret = match perform_handshake(&mut socket).await {
         Ok(secret) => secret,
         Err(error_code) => {
             send_close_frame(&mut socket, error_code).await;
@@ -81,7 +89,7 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
     };
 
     // Step 2: Receive the proof request
-    let proof_request = match receive_proof_request(&mut socket).await {
+    let proof_request = match receive_proof_request(&mut socket, shared_secret).await {
         Ok(request) => request,
         Err(error_code) => {
             send_close_frame(&mut socket, error_code).await;
@@ -199,8 +207,11 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
     Ok(shared_secret)
 }
 
-/// Receives and validates a proof request from the WebSocket
-async fn receive_proof_request(socket: &mut WebSocket) -> Result<ProofRequest, WsCloseCode> {
+/// Receives and validates an encrypted proof request from the WebSocket
+async fn receive_proof_request(
+    socket: &mut WebSocket,
+    shared_secret: SharedKey<MlKem768>,
+) -> Result<ProofRequest, WsCloseCode> {
     // Wait for message with a timeout
     let receive_result = with_timeout!(PROOF_REQUEST_TIMEOUT_SECS, socket.recv(), "Proof request");
 
@@ -209,15 +220,34 @@ async fn receive_proof_request(socket: &mut WebSocket) -> Result<ProofRequest, W
         bad_request!("No proof request received, client disconnected");
     };
 
-    // Ensure message is valid
-    let Ok(WsMessage::Text(request_text)) = received_message else {
-        bad_request!("Expected text message for proof request, got something else");
+    // Ensure message is binary (encrypted data)
+    let Ok(WsMessage::Binary(encrypted_data)) = received_message else {
+        bad_request!("Expected binary message for encrypted proof request, got something else");
     };
 
-    // Parse proof request
+    // The first AES_GCM_NONCE_LENGTH bytes are the nonce
+    if encrypted_data.len() <= AES_GCM_NONCE_LENGTH {
+        bad_request!("Encrypted data too short to contain nonce");
+    }
+
+    // Extract nonce and ciphertext
+    let (nonce_bytes, ciphertext) = encrypted_data.split_at(AES_GCM_NONCE_LENGTH);
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    // Create AES-GCM cipher using the shared secret
+    let key = Key::<Aes256Gcm>::from_slice(&shared_secret);
+    let cipher = Aes256Gcm::new(key);
+
+    // Decrypt the data
+    let decrypted_data = ok_or_bad_request!(
+        cipher.decrypt(nonce, ciphertext),
+        "Failed to decrypt proof request"
+    );
+
+    // Parse the decrypted data as a ProofRequest
     let proof_request = ok_or_bad_request!(
-        serde_json::from_str(&request_text),
-        "Failed to parse proof request JSON"
+        serde_json::from_slice(&decrypted_data),
+        "Failed to parse decrypted proof request JSON"
     );
 
     Ok(proof_request)
