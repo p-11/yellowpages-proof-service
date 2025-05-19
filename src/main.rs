@@ -1291,6 +1291,8 @@ mod tests {
             proof_request.ml_dsa_44_public_key
         );
 
+        let proof_request_bytes = proof_request_json.as_bytes();
+
         // Create AES-GCM cipher
         let key = Key::<Aes256Gcm>::from_slice(&shared_secret);
         let cipher = Aes256Gcm::new(key);
@@ -1303,7 +1305,7 @@ mod tests {
 
         // Encrypt the proof request
         let ciphertext = cipher
-            .encrypt(nonce, proof_request_json.as_ref())
+            .encrypt(nonce, proof_request_bytes)
             .expect("Failed to encrypt proof request");
 
         // Combine nonce and ciphertext into final message

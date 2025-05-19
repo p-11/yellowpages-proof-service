@@ -33,6 +33,9 @@ const TIMEOUT_CLOSE_CODE: u16 = 4000; // Custom code for timeout errors
 
 // Constants for AES-GCM
 pub const AES_GCM_NONCE_LENGTH: usize = 12; // 96 bits
+// Maximum size for encrypted proof request (empirically determined)
+// This includes the nonce (12 bytes), the AES-GCM tag (16 bytes), and the encrypted data
+const MAX_ENCRYPTED_PROOF_REQUEST_LENGTH: usize = 5500;
 
 /// Type alias for WebSocket close codes
 pub type WsCloseCode = u16;
@@ -227,6 +230,13 @@ async fn receive_proof_request(
     // The first AES_GCM_NONCE_LENGTH bytes are the nonce
     if encrypted_data.len() <= AES_GCM_NONCE_LENGTH {
         bad_request!("Encrypted data too short to contain nonce");
+    }
+    if encrypted_data.len() > MAX_ENCRYPTED_PROOF_REQUEST_LENGTH {
+        bad_request!(
+            "Encrypted data too large: {} bytes (max allowed: {})",
+            encrypted_data.len(),
+            MAX_ENCRYPTED_PROOF_REQUEST_LENGTH
+        );
     }
 
     // Extract nonce and ciphertext
