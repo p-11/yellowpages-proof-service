@@ -8,7 +8,7 @@ use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_
 use bitcoin::{Address as BitcoinAddress, Network, address::AddressType};
 use ml_dsa::{
     EncodedVerifyingKey as MlDsaEncodedVerifyingKey, MlDsa44, Signature as MlDsaSignature,
-    VerifyingKey as MlDsaVerifyingKey, signature::Verifier,
+    VerifyingKey as MlDsaVerifyingKey, signature::Verifier as MlDsaVerifier,
 };
 use pq_address::{
     DecodedAddress as DecodedPqAddress, PubKeyType as PqPubKeyType,
@@ -17,21 +17,11 @@ use pq_address::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use slh_dsa::{Sha2_128s, Signature as SlhDsaSignature, VerifyingKey as SlhDsaVerifyingKey};
 use std::env;
 use std::str::FromStr;
 use tower_http::cors::{Any, CorsLayer};
 use websocket::{WsCloseCode, handle_ws_upgrade};
-
-type ValidationResult = Result<
-    (
-        BitcoinAddress,
-        BitcoinMessageSignature,
-        DecodedPqAddress,
-        MlDsaVerifyingKey<MlDsa44>,
-        MlDsaSignature<MlDsa44>,
-    ),
-    WsCloseCode,
->;
 
 #[derive(Serialize, Deserialize)]
 struct AttestationRequest {
@@ -39,9 +29,11 @@ struct AttestationRequest {
 }
 
 #[derive(Serialize, Deserialize)]
+#[allow(clippy::struct_field_names)]
 struct UserData {
     bitcoin_address: String,
     ml_dsa_44_address: String,
+    slh_dsa_sha2_s_128_address: String,
 }
 
 impl UserData {
@@ -54,23 +46,37 @@ impl UserData {
 
 #[derive(Serialize, Deserialize)]
 struct ProofRequest {
-    bitcoin_signed_message: String,
     bitcoin_address: String,
+    bitcoin_signed_message: String,
     ml_dsa_44_address: String,
-    ml_dsa_44_signed_message: String,
     ml_dsa_44_public_key: String,
-    // slh_dsa_sha2_s_128_address: String,
-    // slhdsa_sha2_s_128_signed_message: String,
-    // slhdsa_sha2_s_128_public_key: String,
+    ml_dsa_44_signed_message: String,
+    slh_dsa_sha2_s_128_address: String,
+    slh_dsa_sha2_s_128_public_key: String,
+    slh_dsa_sha2_s_128_signed_message: String,
 }
 
 #[derive(Serialize, Deserialize)]
 struct UploadProofRequest {
     btc_address: String,
     ml_dsa_44_address: String,
+    slh_dsa_sha2_s_128_address: String,
     version: String,
     proof: String,
 }
+
+struct ValidatedInputs {
+    pub bitcoin_address: BitcoinAddress,
+    pub bitcoin_signed_message: BitcoinMessageSignature,
+    pub ml_dsa_44_address: DecodedPqAddress,
+    pub ml_dsa_44_public_key: MlDsaVerifyingKey<MlDsa44>,
+    pub ml_dsa_44_signed_message: MlDsaSignature<MlDsa44>,
+    pub slh_dsa_sha2_s_128_address: DecodedPqAddress,
+    pub slh_dsa_sha2_s_128_public_key: SlhDsaVerifyingKey<Sha2_128s>,
+    pub slh_dsa_sha2_s_128_signed_message: SlhDsaSignature<Sha2_128s>,
+}
+
+type ValidationResult = Result<ValidatedInputs, WsCloseCode>;
 
 // Macro to handle the common pattern of error checking
 #[macro_export]
@@ -249,33 +255,42 @@ async fn health(State(config): State<Config>) -> Json<serde_json::Value> {
 async fn prove(config: Config, proof_request: ProofRequest) -> WsCloseCode {
     // Log the received data
     println!(
-        "Received proof request - Bitcoin Address: {}, ML-DSA 44 Address: {}",
-        proof_request.bitcoin_address, proof_request.ml_dsa_44_address,
+        "Received proof request - Bitcoin Address: {}, ML-DSA 44 Address: {}, SLH-DSA SHA2-S-128 Address: {}",
+        proof_request.bitcoin_address,
+        proof_request.ml_dsa_44_address,
+        proof_request.slh_dsa_sha2_s_128_address
     );
 
-    // Step 1: Validate inputs
-    let (
+    // Validate inputs
+    let ValidatedInputs {
         bitcoin_address,
         bitcoin_signed_message,
         ml_dsa_44_address,
         ml_dsa_44_public_key,
         ml_dsa_44_signed_message,
-    ) = match validate_inputs(&proof_request) {
+        slh_dsa_sha2_s_128_address,
+        slh_dsa_sha2_s_128_public_key,
+        slh_dsa_sha2_s_128_signed_message,
+    } = match validate_inputs(&proof_request) {
         Ok(result) => result,
         Err(code) => return code,
     };
 
     // Re-create the message that should have been signed by all keypairs
-    let expected_message = generate_expected_message(&bitcoin_address, &ml_dsa_44_address);
+    let expected_message = generate_expected_message(
+        &bitcoin_address,
+        &ml_dsa_44_address,
+        &slh_dsa_sha2_s_128_address,
+    );
 
-    // Step 2: Verify Bitcoin ownership
+    // Verify Bitcoin ownership
     if let Err(code) =
         verify_bitcoin_ownership(&bitcoin_address, &bitcoin_signed_message, &expected_message)
     {
         return code;
     }
 
-    // Step 3: Verify ML-DSA 44 ownership
+    // Verify ML-DSA 44 ownership
     if let Err(code) = verify_ml_dsa_44_ownership(
         &ml_dsa_44_address,
         &ml_dsa_44_public_key,
@@ -285,17 +300,33 @@ async fn prove(config: Config, proof_request: ProofRequest) -> WsCloseCode {
         return code;
     }
 
-    // Step 4: Get attestation document with embedded addresses
-    let attestation_doc_base64 =
-        match embed_addresses_in_proof(&bitcoin_address, &ml_dsa_44_address).await {
-            Ok(doc) => doc,
-            Err(code) => return code,
-        };
+    // Verify SLH-DSA SHA2-S-128 ownership
+    if let Err(code) = verify_slh_dsa_sha2_s_128_ownership(
+        &slh_dsa_sha2_s_128_address,
+        &slh_dsa_sha2_s_128_public_key,
+        &slh_dsa_sha2_s_128_signed_message,
+        &expected_message,
+    ) {
+        return code;
+    }
 
-    // Step 5: Upload to data layer
+    // Get attestation document with embedded addresses
+    let attestation_doc_base64 = match embed_addresses_in_proof(
+        &bitcoin_address,
+        &ml_dsa_44_address,
+        &slh_dsa_sha2_s_128_address,
+    )
+    .await
+    {
+        Ok(doc) => doc,
+        Err(code) => return code,
+    };
+
+    // Upload to data layer
     if let Err(code) = upload_to_data_layer(
         &bitcoin_address,
         &ml_dsa_44_address,
+        &slh_dsa_sha2_s_128_address,
         &attestation_doc_base64,
         &config.version,
         &config.data_layer_url,
@@ -311,7 +342,7 @@ async fn prove(config: Config, proof_request: ProofRequest) -> WsCloseCode {
     close_code::NORMAL
 }
 
-fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
+fn validate_lengths(proof_request: &ProofRequest) -> Result<(), WsCloseCode> {
     // Validate that all required fields have reasonable lengths to avoid decoding large amounts of data
     if proof_request.bitcoin_address.len() > 100 {
         bad_request!(
@@ -347,6 +378,35 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
             proof_request.ml_dsa_44_public_key.len()
         );
     }
+
+    if proof_request.slh_dsa_sha2_s_128_address.len() != 64 {
+        bad_request!(
+            "SLH-DSA SHA2-S-128 address must be 64 bytes long, got {}",
+            proof_request.slh_dsa_sha2_s_128_address.len()
+        );
+    }
+
+    if proof_request.slh_dsa_sha2_s_128_signed_message.len() > 11000 {
+        bad_request!(
+            "SLH-DSA SHA2-S-128 signature is too long: {}",
+            proof_request.slh_dsa_sha2_s_128_signed_message.len()
+        );
+    }
+
+    if proof_request.slh_dsa_sha2_s_128_public_key.len() > 50 {
+        bad_request!(
+            "SLH-DSA SHA2-S-128 public key is too long: {}",
+            proof_request.slh_dsa_sha2_s_128_public_key.len()
+        );
+    }
+
+    // If all validations pass, return Ok
+    Ok(())
+}
+
+fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
+    // Validate that all required fields have reasonable lengths to avoid decoding large amounts of data
+    validate_lengths(proof_request)?;
 
     // Parse the Bitcoin address
     let parsed_bitcoin_address = ok_or_bad_request!(
@@ -414,11 +474,11 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
     );
 
     // Convert bytes to proper types
-    let encoded_key = ok_or_bad_request!(
+    let ml_dsa_44_encoded_key = ok_or_bad_request!(
         MlDsaEncodedVerifyingKey::<MlDsa44>::try_from(&ml_dsa_44_public_key_bytes[..]),
         "Failed to parse ML-DSA encoded key"
     );
-    let ml_dsa_44_public_key = MlDsaVerifyingKey::<MlDsa44>::decode(&encoded_key);
+    let ml_dsa_44_public_key = MlDsaVerifyingKey::<MlDsa44>::decode(&ml_dsa_44_encoded_key);
 
     let ml_dsa_44_signed_message = ok_or_bad_request!(
         MlDsaSignature::<MlDsa44>::try_from(&ml_dsa_44_signed_message_bytes[..]),
@@ -427,21 +487,64 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
 
     println!("Successfully parsed ML-DSA 44 inputs");
 
-    Ok((
+    // Decode the SLH-DSA SHA2-S-128 address as a DecodedPqAddress
+    let slh_dsa_sha2_s_128_address = ok_or_bad_request!(
+        decode_pq_address(&proof_request.slh_dsa_sha2_s_128_address),
+        "Failed to decode SLH-DSA SHA2-S-128 address"
+    );
+
+    // Check if the address is an SLH-DSA SHA2-S-128 address
+    if slh_dsa_sha2_s_128_address.pubkey_type != PqPubKeyType::SlhDsaSha2S128 {
+        bad_request!(
+            "Address must use SLH-DSA SHA2-S-128 public key type, got {:?}",
+            slh_dsa_sha2_s_128_address.pubkey_type
+        );
+    }
+
+    // Decode SLH-DSA SHA2-S-128 signature (should be base64 encoded)
+    let slh_dsa_sha2_s_128_signed_message_bytes = ok_or_bad_request!(
+        general_purpose::STANDARD.decode(&proof_request.slh_dsa_sha2_s_128_signed_message),
+        "Failed to decode SLH-DSA SHA2-S-128 signature base64"
+    );
+
+    // Decode SLH-DSA SHA2-S-128 public key (should be base64 encoded)
+    let slh_dsa_sha2_s_128_public_key_bytes = ok_or_bad_request!(
+        general_purpose::STANDARD.decode(&proof_request.slh_dsa_sha2_s_128_public_key),
+        "Failed to decode SLH-DSA SHA2-S-128 public key base64"
+    );
+
+    // Convert bytes to proper types
+    let slh_dsa_sha2_s_128_public_key = ok_or_bad_request!(
+        SlhDsaVerifyingKey::<Sha2_128s>::try_from(&slh_dsa_sha2_s_128_public_key_bytes[..]),
+        "Failed to parse SLH-DSA SHA2-S-128 public key"
+    );
+
+    let slh_dsa_sha2_s_128_signed_message = ok_or_bad_request!(
+        SlhDsaSignature::<Sha2_128s>::try_from(&slh_dsa_sha2_s_128_signed_message_bytes[..]),
+        "Failed to parse SLH-DSA SHA2-S-128 signature"
+    );
+
+    println!("Successfully parsed SLH-DSA SHA2-S-128 inputs");
+
+    Ok(ValidatedInputs {
         bitcoin_address,
         bitcoin_signed_message,
         ml_dsa_44_address,
         ml_dsa_44_public_key,
         ml_dsa_44_signed_message,
-    ))
+        slh_dsa_sha2_s_128_address,
+        slh_dsa_sha2_s_128_public_key,
+        slh_dsa_sha2_s_128_signed_message,
+    })
 }
 
 fn generate_expected_message(
     bitcoin_address: &BitcoinAddress,
     ml_dsa_44_address: &DecodedPqAddress,
+    slh_dsa_sha2_s_128_address: &DecodedPqAddress,
 ) -> String {
     format!(
-        "I want to permanently link my Bitcoin address {bitcoin_address} with my post-quantum address {ml_dsa_44_address}"
+        "I want to permanently link my Bitcoin address {bitcoin_address} with my post-quantum addresses: ML-DSA-44 – {ml_dsa_44_address}, SLH-DSA-SHA2-128 – {slh_dsa_sha2_s_128_address}"
     )
 }
 
@@ -519,7 +622,7 @@ fn verify_ml_dsa_44_ownership(
 
     println!("ML-DSA 44 signature verified successfully");
 
-    // Step 3: Verify that the public key matches the address
+    // Verify that the public key matches the address
     // The address should be the SHA256 hash of the encoded public key
     let encoded_key = verifying_key.encode();
     let computed_address = sha256::Hash::hash(&encoded_key[..]).to_byte_array();
@@ -535,9 +638,42 @@ fn verify_ml_dsa_44_ownership(
     Ok(())
 }
 
+fn verify_slh_dsa_sha2_s_128_ownership(
+    address: &DecodedPqAddress,
+    verifying_key: &SlhDsaVerifyingKey<Sha2_128s>,
+    signature: &SlhDsaSignature<Sha2_128s>,
+    expected_message: &str,
+) -> Result<(), WsCloseCode> {
+    // Verify the signature
+    ok_or_bad_request!(
+        verifying_key.verify(expected_message.as_bytes(), signature),
+        "Failed to verify SLH-DSA SHA2-S-128 signature"
+    );
+
+    println!("SLH-DSA SHA2-S-128 signature verified successfully");
+
+    // Verify that the public key matches the address
+    // The address should be the SHA256 hash of the encoded public key
+    let encoded_key = verifying_key.to_bytes();
+    let computed_address = sha256::Hash::hash(&encoded_key[..]).to_byte_array();
+
+    if computed_address == address.pubkey_hash_bytes() {
+        println!(
+            "SLH-DSA SHA2-S-128 address ownership verified: public key hash matches the address"
+        );
+    } else {
+        bad_request!(
+            "SLH-DSA SHA2-S-128 address verification failed: public key hash does not match the address"
+        );
+    }
+
+    Ok(())
+}
+
 async fn embed_addresses_in_proof(
     bitcoin_address: &BitcoinAddress,
     ml_dsa_44_address: &DecodedPqAddress,
+    slh_dsa_sha2_s_128_address: &DecodedPqAddress,
 ) -> Result<String, WsCloseCode> {
     let client = Client::new();
 
@@ -545,6 +681,7 @@ async fn embed_addresses_in_proof(
     let user_data = UserData {
         bitcoin_address: bitcoin_address.to_string(),
         ml_dsa_44_address: ml_dsa_44_address.to_string(),
+        slh_dsa_sha2_s_128_address: slh_dsa_sha2_s_128_address.to_string(),
     };
 
     let user_data_base64 = ok_or_internal_error!(user_data.encode(), "Failed to encode user data");
@@ -585,6 +722,7 @@ async fn embed_addresses_in_proof(
 async fn upload_to_data_layer(
     bitcoin_address: &BitcoinAddress,
     ml_dsa_44_address: &DecodedPqAddress,
+    slh_dsa_sha2_s_128_address: &DecodedPqAddress,
     attestation_doc_base64: &str,
     version: &str,
     data_layer_url: &str,
@@ -595,6 +733,7 @@ async fn upload_to_data_layer(
     let request = UploadProofRequest {
         btc_address: bitcoin_address.to_string(),
         ml_dsa_44_address: ml_dsa_44_address.to_string(),
+        slh_dsa_sha2_s_128_address: slh_dsa_sha2_s_128_address.to_string(),
         version: version.to_string(),
         proof: attestation_doc_base64.to_string(),
     };
@@ -639,6 +778,7 @@ mod tests {
     };
     use rand::{RngCore, SeedableRng, rngs::StdRng};
     use serial_test::serial;
+    use slh_dsa::{SigningKey as SlhDsaSigningKey, signature::Keypair as SlhDsaKeypair};
     use tokio::net::TcpListener;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
@@ -652,6 +792,7 @@ mod tests {
     fn mock_attestation_handler(
         expected_bitcoin_address: String,
         expected_ml_dsa_44_address: String,
+        expected_slh_dsa_sha2_s_128_address: String,
         Json(request): Json<AttestationRequest>,
     ) -> impl IntoResponse {
         // Decode and verify the challenge
@@ -668,6 +809,7 @@ mod tests {
         // Verify the addresses match what we expect
         if decoded_data.bitcoin_address != expected_bitcoin_address
             || decoded_data.ml_dsa_44_address != expected_ml_dsa_44_address
+            || decoded_data.slh_dsa_sha2_s_128_address != expected_slh_dsa_sha2_s_128_address
         {
             return (StatusCode::BAD_REQUEST, "Address mismatch in challenge").into_response();
         }
@@ -685,6 +827,7 @@ mod tests {
     fn mock_data_layer_handler(
         expected_bitcoin_address: String,
         expected_ml_dsa_44_address: String,
+        expected_slh_dsa_sha2_s_128_address: String,
         expected_version: &str,
         request: (axum::http::HeaderMap, Json<UploadProofRequest>),
     ) -> impl IntoResponse {
@@ -702,6 +845,13 @@ mod tests {
         }
         if request.ml_dsa_44_address != expected_ml_dsa_44_address {
             return (StatusCode::BAD_REQUEST, "Invalid ML-DSA 44 address").into_response();
+        }
+        if request.slh_dsa_sha2_s_128_address != expected_slh_dsa_sha2_s_128_address {
+            return (
+                StatusCode::BAD_REQUEST,
+                "Invalid SLH-DSA SHA2-S-128 address",
+            )
+                .into_response();
         }
         if request.version != expected_version {
             return (StatusCode::BAD_REQUEST, "Invalid version").into_response();
@@ -721,25 +871,34 @@ mod tests {
     }
 
     // Constants for test data
-    const VALID_BITCOIN_ADDRESS_P2PKH: &str = "1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm"; // P2PKH address
+    const VALID_BITCOIN_ADDRESS_P2PKH: &str = "1JQcr9RQ1Y24Lmnuyjc6Lxbci6E7PpkoQv";
     const VALID_BITCOIN_SIGNED_MESSAGE_P2PKH: &str =
-        "ID51XW7k70q1vdM3Ka1WGxXGHZwiJZK5hhJgvVvEE8niOGjjPJOnhIV1045In5A+OPPSpGV0IgStSQ9Kg5lUg4c="; // Signature made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS_P2PKH`
-    const VALID_BITCOIN_ADDRESS_P2WPKH: &str = "bc1qqylnmgkvfa7t68e7a7m3ms2cs9xu6kxtzemdre"; // P2WPKH address (Segwit)
+        "HziEt2hqF40ayCWMuIaKAnZWyJcUGlrIyd9gvahpMuQhTfrybwDkPinGWp9Oi5i6J+bIpDQcMaHXkg2hYrDpR4w=";
+    const VALID_BITCOIN_ADDRESS_P2WPKH: &str = "bc1qhmc6zxfgtu42h2gujshh0f44ph55sjglncd3xj";
     const VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH: &str =
-        "IETj15YK/Gpgk4gf98G0ekVOv199m5i3X3ulRZDLRxzIF9BNaDgeFZYibjpOxNrdcbZdKRR1z2YgggcPQ1IgYkY="; // Signature made using Electrum P2WPKH wallet with address `VALID_BITCOIN_ADDRESS_P2WPKH`
-    const INVALID_SIGNATURE: &str =
-        "IHHwE2wSfJU3Ej5CQA0c8YZIBBl9/knLNfwzOxFMQ3fqZNStxzkma0Jwko+T7JMAGIQqP5d9J2PcQuToq5QZAhk="; // Signature for "goodbye world" made using Electrum P2PKH wallet with address `VALID_BITCOIN_ADDRESS_P2PKH`
+        "IHh7YGdMouBipj9uul4go609Xl5mgD7RjesdD6LjYgvsD8i+2NeWyJwyti7GJzvpapFRZ0so6vbXTJTrf5UrtSw=";
+    const INVALID_BITCOIN_SIGNATURE: &str =
+        "IHHwE2wSfJU3Ej5CQA0c8YZIBBl9/knLNfwzOxFMQ3fqZNStxzkma0Jwko+T7JMAGIQqP5d9J2PcQuToq5QZAhk="; // Signature for "goodbye world" made  with `VALID_BITCOIN_ADDRESS_P2PKH`
     const P2TR_ADDRESS: &str = "bc1pxwww0ct9ue7e8tdnlmug5m2tamfn7q06sahstg39ys4c9f3340qqxrdu9k"; // Taproot address
-    const INVALID_ADDRESS: &str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7Divf"; // Malformed address
+    const INVALID_BITCOIN_ADDRESS: &str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7Divf"; // Malformed address
 
     // ML-DSA 44 test data
     const VALID_ML_DSA_44_ADDRESS: &str =
-        "yp1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hs5cdx7q"; // MlDsa44 address generated using the pq_address crate with VALID_ML_DSA_44_PUBLIC_KEY
-    const VALID_ML_DSA_44_SIGNATURE: &str = "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"; // signature created using Noble post-quantum
-    const VALID_ML_DSA_44_PUBLIC_KEY: &str = "e+ffcul9XkuQCkiCEYX2ES6KMGJ9c7+Z0PFfhnJRckbaHzh4EH9hcEkUoFZ4gK2ta6/xPzgxB1yTT92wPZw8SmrK3DeLMz9mkst0IWkSzJ/TPPHRcSYJekO+CLV8k7uXsGSSoK4fbLqkX8leQFMCzjzRYg06zb3SD7iQwK3O8dP2WWLa9PkBMl1LECCBtTHrxoqyYtKopNbn3wICOOxI1jjTTL46AZnE6Vw2vQdLB/Qg59Pq6su8P3zEqBbsVPwPpT9ZbBNCHE+puWjdYnOfttj6DZ748CRHibQ9WTkH+VpxssIxU62nsYes/fV85nDozwddZggZoLfRsmSlG1Yz6h4m5hMMu9Nku9myTTw4UCiGSxZmad+yIjl7hh6J3wDaLMDA6SXajLSXTk2RwmnsEUlYs+uXS6Wj5wzg+bLQDQVMkU+doOf4vPTArf4uwzJdZ9Ghp8vjHd+rQgKjuo+Hy+HWz4JgvaQXlln+3yF0eY4/v01Bhe8BwVCbFZX8ts2Ay53gJmZEtsnXw3d5xedAMO9LJt4UqwovnmWCuApzAG9jyvG3Wxxe572E725S4vLtgnESzfrsD3wWo/A0oP+wk4oOFjhRDdVwHzwBDiHPhl43b/lt6omQuxK+xF0BJ77X/VhAoCx5zwIQ1GnmtXmP5xqx8f+e9ceFWNSxBPVKakKx/BveCxF1uOLc7DZUFLDVxRBURiF4BQX/670+FaYF2BWS3XtxfCqxaCz3F177qUev3pYuwpvSIj6WNSmU8uyxvibSzvYtA50gQtznTfteWja14B8AB+rgagz5nEzRzO7u1+QmxbdvEyBKvmWzNtnvsNqee4LhU9sl6rPdyUScmDrCPVLiPhrqY/sBVfxzX6z40suflYFPYU+fE6lApXnpyDB8he25DmnmPYTEsCq9d2uYaYTSBAgeir0qi9Jnjj/mcJ/3sNwwTlh7Tp6ahJlqWEUJ4myGxcHEesgWAeIrqJ6bhHTxP1n+do4ffry4CMcAjoAPAwYY0JUTYANy722LbOgiN+z5KUryC/MYjw/azOHFcpYjsGR60fARG03yVBgNBuD5okkmxtrAGdS4w85UDMAa/dwobUI5bdigFHP0Av6hHQ5uxeaxt1gAO53veGmA8aIOidhtZyHhlv+ANl9VYyZMOdPP1DjBTd8AQTIGR2JglmGzE8/00Ndx736MNdVzxNG0iKOvLlgl3cd1cEjW6hfC47juSDCgZTs9oPeo2mr1qvtak7zVd/yByjP9KHh0mjCi3cZDButaTe/oic4bdf24xQDtahSEJpAf49i9gzIpqxG92pyM7HRaVSvScFmCNnNKLJSDCeYw4+zlU+jawGKPjX6ebFDGFV1gNiPvkZdYd/5UXFwpHt5saj/Lgfoe/BtJWUx53TNkYlTNytflgV/ssFo8k9aYlIq2SDDKeZdlZexeNJOvhr8yntOQzLK6WWVONUgilTFNKX3+NQTmMR1LhA7VSP17+/3NjM0wEaz/JpKRoqMMvrgzl2A/6s019UMoT81hGXNtk9Ed8vxtdeNi1BC+SHWWyazundxXMQ4/gD7PnJXQJduz0QZ8quxRQZZTn+u+t1hKyMQikRKqephJaIQv9NLnKffPncEii9ukfRuLLCy7hPFuAho1Bfgi6rJMN0AxlX9URe6LB6vjLMNdTvWVqCHtBvay4scJg58my00razBF8BhQe7db+UJiv5JwADSJ2fwO/oooReksH3Sv1U4UOx5Y7kK8bbChFg=="; // Public key generated using Noble post-quantum
+        "rh1qpqf3nsu4tuqqwhhx2u5jfxcce6kprx52uc28s50d6c2ft90vnhhdks6m9lmd"; // MlDsa44 address generated using the pq_address crate with VALID_ML_DSA_44_PUBLIC_KEY
+    const VALID_ML_DSA_44_SIGNATURE: &str = "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";
+    const VALID_ML_DSA_44_PUBLIC_KEY: &str = "s5Et8AsqNmifDNTG5chS66Bzn2o1+QtSXm65REUGNnC139cm1fY3T14HYALfc97hKc4z1e7c+TtU8ayMW4w7XLqjq7QHpNEdPGzB+sw03bLja2NJ8IhSoOyEFEBOZkdWRrgRDedKa5YB64bRQjAeuU+r7271I0AII3blCEAc+s2AXLubJ25nqDs8XP2M3AcCOIZyRv1rloLpV/aQRcr5UDCQ/gqJaKPOoLRh4tfrVjunMXa7egbOIo04Rsecv/WxEQpNaCr9YTl40ADhf/Q3ibUQ/eTZgO5pd/r3njF95HoBuPz+iiN3wd/lrpSgZPRxY+VScU+THbc3p65f8kz8ClK2fEiEvdxfs6CSlNP3Y1GwwrZy+o3ZUBl0QHPxJkO0h+0l4qjQw+zG9gfxKb+KIJE6a6MNQzug+CM30fIGRwPRlP1yXhtddKLmbZg8SUkOiUh6jdH45Ewwx67rbxRefvbLqDAESla+BSjVN7ywAuy0cKkQA/rYWjvjVK/9+mm6tNiwdIprVcI+22d+A92GKjrJv07jDezNaFMU4A8PGJ2YLcgmtx6pFeOM33vSS2i8aJYAsHd3BSsysEk2dCuu5G0uHXcex9A/vTanHOaG/5IvNsS6SLDawQ2P6iB6jFyJDRemZydEtQK8fAsJ+gt2umOS8ubHQRate2GUngI2ydV8EAN064OCWr70sHzbuwdFQ/ffMFhAHy+1cU20+khzeVztOXL3lD6YsRh//K2GzYVO2VzCCURbxUQfSLoOsr0rs9POINx41weGdDyiusszBCyNMHtq95EEYvhnQc+lXI6LGDGvWApQ7mPLlj6Yx+a8kwzy6vaBZDa7jcM0n8o8s9qvfDgqg4ZuVT34j4ELqkPWPDZcSduuncDXmxFYEdYncd8Kkq4zrcIS3utLzdIgPUSFGF7RpJLMxPADDUhNzJ07G6bT04DTOLdLNIHtfJRkOXa/Z1mWva7Qz37bgg6Hd3Y0fg5hFGR1k+qfdHJcJgUblXvMku8nT+gzTJ+oFRzNuMaFfyYSx9kfZStuZ8rK7o/wvyEHRbjNzXPjHVWmVt/FftnYcu3qO9/wOtqD66HC/tcLoYW7zXXh+hUAInMkb4ZCTGOdZcIUrQJ/Wf8DCY4BB+JzfzlYFXjPYpBlD+IKSPBY63Jrn0QAfsVdcg312sJ7AH/G8EEYpZ/LFleK8SdVoqQHgX7DT4utor2Ywgfk93ubqUXbQeeieD4ZJFdC2vh3dP9TSx0yDP4njwrz4fuUp6hBLBFoBpbwjS3I3lyZTyLOV0IIbb4dA314VVCO7KcfagKVoA17La091jugQe6GhGUmNxtqjjIkQx5AcVCzqFa7Lbs64bhV/KGryc2jEoCIMpFj0ikCA61Qo3cBjPDeVL99kCK11aAiCR3OKByYrOZFFDlLVX8szTeCGXYpNYTmF2JOZfPfbwVbCr2rnIWrovBIg/6NqRyTKQt2ipvG09YzRWZDGuHOM0mS4eLo2BwFSuMq1UVZwLs57M4P8v55GUkY2XTb+DLCYFOSVBOthnTBSoLgiy9uSodlsu8aQHIoypbj+++MrV3G8e+UP0FYkcys2ivbehCcLAcD0zz+gWEYAI+kkzYwQWp/zhDmyann/GW1S7xUFRqREUmLnrvnK8M2+nMIQydYOacDGtO7EyAVvc7uATfP1KfGqZrN6PkPTghYdUOa4r+XUiLTDXviEolWW9jjYx1vDHrjtBZqgbhBHqQJSMiithqwBB3nPQ==";
     const INVALID_ML_DSA_44_ADDRESS: &str = "invalid_address";
 
-    const VALID_ML_DSA_44_SIGNATURE_P2WPKH: &str = "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"; // ML-DSA 44 signature associated with P2WPKH address
+    const VALID_ML_DSA_44_SIGNATURE_P2WPKH: &str = "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";
+
+    // SLH-DSA SHA2-S-128
+    const VALID_SLH_DSA_SHA2_128_ADDRESS: &str =
+        "rh1qpqjl8vzuprzhnplx2thzcusrj6ma9wxaes327hfjmqcsqwwxxfm7vqf4w7ay"; // SLH-DSA SHA2-S-128 address generated using the pq_address crate with VALID_SLH_DSA_SHA2_128_PUBLIC_KEY
+    const VALID_SLH_DSA_SHA2_128_SIGNATURE: &str = "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";
+    const VALID_SLH_DSA_SHA2_128_PUBLIC_KEY: &str = "TKtipiztcVgvEH/FtEqrJ2tjqUFV1RS94uTTvVEn9UY=";
+    const INVALID_SLH_DSA_SHA2_128_ADDRESS: &str = "invalid_address";
+
+    const VALID_SLH_DSA_SHA2_128_SIGNATURE_P2WPKH: &str = "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";
 
     #[test]
     fn test_validate_inputs_valid_data() {
@@ -749,6 +908,9 @@ mod tests {
             ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
         let result = validate_inputs(&proof_request);
@@ -763,6 +925,9 @@ mod tests {
             ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
         let result = validate_inputs(&proof_request);
@@ -772,11 +937,14 @@ mod tests {
     #[test]
     fn test_validate_inputs_invalid_address() {
         let proof_request = ProofRequest {
-            bitcoin_address: INVALID_ADDRESS.to_string(),
+            bitcoin_address: INVALID_BITCOIN_ADDRESS.to_string(),
             bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
             ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
         let result = validate_inputs(&proof_request);
@@ -794,6 +962,9 @@ mod tests {
             ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
         let result = validate_inputs(&proof_request);
@@ -808,6 +979,9 @@ mod tests {
             ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
         let result = validate_inputs(&proof_request);
@@ -825,6 +999,9 @@ mod tests {
             ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
         let result = validate_inputs(&proof_request);
@@ -842,6 +1019,9 @@ mod tests {
             ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
         let result = validate_inputs(&proof_request);
@@ -859,12 +1039,25 @@ mod tests {
             ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let (address, signature, ml_dsa_44_address, _, _) =
-            validate_inputs(&proof_request).unwrap();
-        let expected_message = generate_expected_message(&address, &ml_dsa_44_address);
-        let result = verify_bitcoin_ownership(&address, &signature, &expected_message);
+        let ValidatedInputs {
+            bitcoin_address,
+            bitcoin_signed_message,
+            ml_dsa_44_address,
+            slh_dsa_sha2_s_128_address,
+            ..
+        } = validate_inputs(&proof_request).unwrap();
+        let expected_message = generate_expected_message(
+            &bitcoin_address,
+            &ml_dsa_44_address,
+            &slh_dsa_sha2_s_128_address,
+        );
+        let result =
+            verify_bitcoin_ownership(&bitcoin_address, &bitcoin_signed_message, &expected_message);
 
         assert!(
             result.is_ok(),
@@ -876,17 +1069,30 @@ mod tests {
     fn test_verification_fails_wrong_message() {
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
-            bitcoin_signed_message: INVALID_SIGNATURE.to_string(), // Signature for different message
+            bitcoin_signed_message: INVALID_BITCOIN_SIGNATURE.to_string(), // Signature for different message
             ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
         // Validation should pass since it's a valid signature format, just for the wrong message
-        let (address, signature, ml_dsa_44_address, _, _) =
-            validate_inputs(&proof_request).unwrap();
-        let expected_message = generate_expected_message(&address, &ml_dsa_44_address);
-        let result = verify_bitcoin_ownership(&address, &signature, &expected_message);
+        let ValidatedInputs {
+            bitcoin_address,
+            bitcoin_signed_message,
+            ml_dsa_44_address,
+            slh_dsa_sha2_s_128_address,
+            ..
+        } = validate_inputs(&proof_request).unwrap();
+        let expected_message = generate_expected_message(
+            &bitcoin_address,
+            &ml_dsa_44_address,
+            &slh_dsa_sha2_s_128_address,
+        );
+        let result =
+            verify_bitcoin_ownership(&bitcoin_address, &bitcoin_signed_message, &expected_message);
 
         assert!(
             result.is_err(),
@@ -895,19 +1101,42 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_inputs_invalid_ml_dsa_address() {
+    fn test_validate_inputs_invalid_ml_dsa_44_address() {
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
             ml_dsa_44_address: INVALID_ML_DSA_44_ADDRESS.to_string(),
             ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
             ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
         let result = validate_inputs(&proof_request);
         assert!(
             result.is_err(),
             "Validation should fail with invalid ML-DSA address"
+        );
+    }
+
+    #[test]
+    fn test_validate_inputs_invalid_slh_dsa_sha2_s_128_address() {
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
+            ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
+            ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
+            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: INVALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
+        };
+
+        let result = validate_inputs(&proof_request);
+        assert!(
+            result.is_err(),
+            "Validation should fail with invalid SLH-DSA address"
         );
     }
 
@@ -919,10 +1148,12 @@ mod tests {
             ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE_P2WPKH.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
         let result = validate_inputs(&proof_request);
-        println!("P2WPKH validation result: {result:?}");
 
         assert!(
             result.is_ok(),
@@ -939,12 +1170,25 @@ mod tests {
             ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE_P2WPKH.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let (address, signature, ml_dsa_44_address, _, _) =
-            validate_inputs(&proof_request).unwrap();
-        let expected_message = generate_expected_message(&address, &ml_dsa_44_address);
-        let result = verify_bitcoin_ownership(&address, &signature, &expected_message);
+        let ValidatedInputs {
+            bitcoin_address,
+            bitcoin_signed_message,
+            ml_dsa_44_address,
+            slh_dsa_sha2_s_128_address,
+            ..
+        } = validate_inputs(&proof_request).unwrap();
+        let expected_message = generate_expected_message(
+            &bitcoin_address,
+            &ml_dsa_44_address,
+            &slh_dsa_sha2_s_128_address,
+        );
+        let result =
+            verify_bitcoin_ownership(&bitcoin_address, &bitcoin_signed_message, &expected_message);
 
         assert!(
             result.is_ok(),
@@ -965,12 +1209,17 @@ mod tests {
         };
         let ml_dsa_44_address = pq_encode_address(&params).expect("valid address");
         let ml_dsa_44_address = decode_pq_address(&ml_dsa_44_address).unwrap();
+        let slh_dsa_sha2_s_128_address = decode_pq_address(VALID_SLH_DSA_SHA2_128_ADDRESS).unwrap();
 
         let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
             .unwrap()
             .require_network(Network::Bitcoin)
             .unwrap();
-        let expected_message = generate_expected_message(&bitcoin_address, &ml_dsa_44_address);
+        let expected_message = generate_expected_message(
+            &bitcoin_address,
+            &ml_dsa_44_address,
+            &slh_dsa_sha2_s_128_address,
+        );
         let signature = keypair.signing_key().sign(expected_message.as_bytes());
 
         let result = verify_ml_dsa_44_ownership(
@@ -982,6 +1231,45 @@ mod tests {
         assert!(
             result.is_ok(),
             "ML-DSA 44 verification should succeed with correct address and signature"
+        );
+    }
+
+    #[test]
+    fn test_slh_dsa_sha2_s_128_verification_succeeds() {
+        let mut rng = rand::thread_rng();
+        let sk = SlhDsaSigningKey::<Sha2_128s>::new(&mut rng);
+        let vk = sk.verifying_key();
+
+        let params = PqAddressParams {
+            network: PqNetwork::Testnet,
+            version: PqVersion::V1,
+            pubkey_type: PqPubKeyType::SlhDsaSha2S128,
+            pubkey_bytes: &vk.to_bytes(),
+        };
+        let slh_dsa_sha2_s_128_address = pq_encode_address(&params).expect("valid address");
+        let slh_dsa_sha2_s_128_address = decode_pq_address(&slh_dsa_sha2_s_128_address).unwrap();
+        let ml_dsa_44_address = decode_pq_address(VALID_ML_DSA_44_ADDRESS).unwrap();
+
+        let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
+            .unwrap()
+            .require_network(Network::Bitcoin)
+            .unwrap();
+        let expected_message = generate_expected_message(
+            &bitcoin_address,
+            &ml_dsa_44_address,
+            &slh_dsa_sha2_s_128_address,
+        );
+        let signature = sk.sign(expected_message.as_bytes());
+
+        let result = verify_slh_dsa_sha2_s_128_ownership(
+            &slh_dsa_sha2_s_128_address,
+            &vk,
+            &signature,
+            &expected_message,
+        );
+        assert!(
+            result.is_ok(),
+            "SLH-DSA SHA2-S-128 verification should succeed with correct address and signature"
         );
     }
 
@@ -999,6 +1287,7 @@ mod tests {
         };
         let ml_dsa_44_address = pq_encode_address(&params).expect("valid address");
         let ml_dsa_44_address = decode_pq_address(&ml_dsa_44_address).unwrap();
+        let slh_dsa_sha2_s_128_address = decode_pq_address(VALID_SLH_DSA_SHA2_128_ADDRESS).unwrap();
 
         // Sign the wrong message
         let signature = keypair.signing_key().sign(wrong_message.as_bytes());
@@ -1007,7 +1296,11 @@ mod tests {
             .unwrap()
             .require_network(Network::Bitcoin)
             .unwrap();
-        let expected_message = generate_expected_message(&bitcoin_address, &ml_dsa_44_address);
+        let expected_message = generate_expected_message(
+            &bitcoin_address,
+            &ml_dsa_44_address,
+            &slh_dsa_sha2_s_128_address,
+        );
 
         let result = verify_ml_dsa_44_ownership(
             &ml_dsa_44_address,
@@ -1018,6 +1311,48 @@ mod tests {
         assert!(
             result.is_err(),
             "ML-DSA 44 verification should fail with wrong message"
+        );
+    }
+
+    #[test]
+    fn test_slh_dsa_sha2_s_128_verification_fails_wrong_message() {
+        let mut rng = rand::thread_rng();
+        let sk = SlhDsaSigningKey::<Sha2_128s>::new(&mut rng);
+        let vk = sk.verifying_key();
+        let wrong_message = "wrong message";
+
+        let params = PqAddressParams {
+            network: PqNetwork::Testnet,
+            version: PqVersion::V1,
+            pubkey_type: PqPubKeyType::SlhDsaSha2S128,
+            pubkey_bytes: &vk.to_bytes(),
+        };
+        let slh_dsa_sha2_s_128_address = pq_encode_address(&params).expect("valid address");
+        let slh_dsa_sha2_s_128_address = decode_pq_address(&slh_dsa_sha2_s_128_address).unwrap();
+        let ml_dsa_44_address = decode_pq_address(VALID_ML_DSA_44_ADDRESS).unwrap();
+
+        // Sign the wrong message
+        let signature = sk.sign(wrong_message.as_bytes());
+
+        let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
+            .unwrap()
+            .require_network(Network::Bitcoin)
+            .unwrap();
+        let expected_message = generate_expected_message(
+            &bitcoin_address,
+            &ml_dsa_44_address,
+            &slh_dsa_sha2_s_128_address,
+        );
+
+        let result = verify_slh_dsa_sha2_s_128_ownership(
+            &slh_dsa_sha2_s_128_address,
+            &vk,
+            &signature,
+            &expected_message,
+        );
+        assert!(
+            result.is_err(),
+            "SLH-DSA SHA2-S-128 verification should fail with wrong message"
         );
     }
 
@@ -1036,13 +1371,17 @@ mod tests {
         };
         let wrong_ml_dsa_44_address = pq_encode_address(&params).expect("valid address");
         let wrong_ml_dsa_44_address = decode_pq_address(&wrong_ml_dsa_44_address).unwrap();
+        let slh_dsa_sha2_s_128_address = decode_pq_address(VALID_SLH_DSA_SHA2_128_ADDRESS).unwrap();
 
         let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
             .unwrap()
             .require_network(Network::Bitcoin)
             .unwrap();
-        let expected_message =
-            generate_expected_message(&bitcoin_address, &wrong_ml_dsa_44_address);
+        let expected_message = generate_expected_message(
+            &bitcoin_address,
+            &wrong_ml_dsa_44_address,
+            &slh_dsa_sha2_s_128_address,
+        );
         let signature = keypair1.signing_key().sign(expected_message.as_bytes());
 
         let result = verify_ml_dsa_44_ownership(
@@ -1058,11 +1397,55 @@ mod tests {
     }
 
     #[test]
+    fn test_slh_dsa_sha2_s_128_verification_fails_wrong_address() {
+        let mut rng1 = rand::thread_rng();
+        let mut rng2 = rand::thread_rng();
+        let sk1 = SlhDsaSigningKey::<Sha2_128s>::new(&mut rng1);
+        let sk2 = SlhDsaSigningKey::<Sha2_128s>::new(&mut rng2);
+        let vk1 = sk1.verifying_key();
+        let vk2 = sk2.verifying_key();
+
+        let params = PqAddressParams {
+            network: PqNetwork::Testnet,
+            version: PqVersion::V1,
+            pubkey_type: PqPubKeyType::SlhDsaSha2S128,
+            pubkey_bytes: &vk2.to_bytes(),
+        };
+        let wrong_slh_dsa_sha2_s_128_address = pq_encode_address(&params).expect("valid address");
+        let wrong_slh_dsa_sha2_s_128_address =
+            decode_pq_address(&wrong_slh_dsa_sha2_s_128_address).unwrap();
+        let ml_dsa_44_address = decode_pq_address(VALID_ML_DSA_44_ADDRESS).unwrap();
+
+        let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
+            .unwrap()
+            .require_network(Network::Bitcoin)
+            .unwrap();
+        let expected_message = generate_expected_message(
+            &bitcoin_address,
+            &ml_dsa_44_address,
+            &wrong_slh_dsa_sha2_s_128_address,
+        );
+        let signature = sk1.sign(expected_message.as_bytes());
+
+        let result = verify_slh_dsa_sha2_s_128_ownership(
+            &wrong_slh_dsa_sha2_s_128_address,
+            &vk1,
+            &signature,
+            &expected_message,
+        );
+        assert!(
+            result.is_err(),
+            "SLH-DSA SHA2-S-128 verification should fail with mismatched address"
+        );
+    }
+
+    #[test]
     fn test_user_data_encoding() {
         // Create and encode user data
         let user_data = UserData {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
         };
 
         // Encode using our new method
@@ -1076,6 +1459,10 @@ mod tests {
         // Verify the values match
         assert_eq!(decoded_data.bitcoin_address, VALID_BITCOIN_ADDRESS_P2PKH);
         assert_eq!(decoded_data.ml_dsa_44_address, VALID_ML_DSA_44_ADDRESS);
+        assert_eq!(
+            decoded_data.slh_dsa_sha2_s_128_address,
+            VALID_SLH_DSA_SHA2_128_ADDRESS
+        );
     }
 
     #[test]
@@ -1128,20 +1515,28 @@ mod tests {
     async fn set_up_end_to_end_test_servers(
         bitcoin_address: &str,
         ml_dsa_44_address: &str,
+        slh_dsa_sha2_s_128_address: &str,
     ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
     {
         const TEST_VERSION: &str = "1.1.0";
 
         let bitcoin_address = bitcoin_address.to_string();
         let ml_dsa_44_address = ml_dsa_44_address.to_string();
+        let slh_dsa_sha2_s_128_address = slh_dsa_sha2_s_128_address.to_string();
 
         let mock_attestation_app = Router::new().route(
             "/attestation-doc",
             post({
                 let bitcoin_address = bitcoin_address.clone();
                 let ml_dsa_44_address = ml_dsa_44_address.clone();
+                let slh_dsa_sha2_s_128_address = slh_dsa_sha2_s_128_address.clone();
                 move |req| async move {
-                    mock_attestation_handler(bitcoin_address, ml_dsa_44_address, req)
+                    mock_attestation_handler(
+                        bitcoin_address,
+                        ml_dsa_44_address,
+                        slh_dsa_sha2_s_128_address,
+                        req,
+                    )
                 }
             }),
         );
@@ -1151,8 +1546,15 @@ mod tests {
             post({
                 let bitcoin_address = bitcoin_address.clone();
                 let ml_dsa_44_address = ml_dsa_44_address.clone();
+                let slh_dsa_sha2_s_128_address = slh_dsa_sha2_s_128_address.clone();
                 move |req| async move {
-                    mock_data_layer_handler(bitcoin_address, ml_dsa_44_address, TEST_VERSION, req)
+                    mock_data_layer_handler(
+                        bitcoin_address,
+                        ml_dsa_44_address,
+                        slh_dsa_sha2_s_128_address,
+                        TEST_VERSION,
+                        req,
+                    )
                 }
             }),
         );
@@ -1282,13 +1684,19 @@ mod tests {
             "bitcoin_signed_message": "{}",
             "ml_dsa_44_address": "{}",
             "ml_dsa_44_signed_message": "{}",
-            "ml_dsa_44_public_key": "{}"
+            "ml_dsa_44_public_key": "{}",
+            "slh_dsa_sha2_s_128_address": "{}",
+            "slh_dsa_sha2_s_128_public_key": "{}",
+            "slh_dsa_sha2_s_128_signed_message": "{}"
         }}"#,
             proof_request.bitcoin_address,
             proof_request.bitcoin_signed_message,
             proof_request.ml_dsa_44_address,
             proof_request.ml_dsa_44_signed_message,
-            proof_request.ml_dsa_44_public_key
+            proof_request.ml_dsa_44_public_key,
+            proof_request.slh_dsa_sha2_s_128_address,
+            proof_request.slh_dsa_sha2_s_128_public_key,
+            proof_request.slh_dsa_sha2_s_128_signed_message
         );
 
         let proof_request_bytes = proof_request_json.as_bytes();
@@ -1336,17 +1744,37 @@ mod tests {
         }
     }
 
+    /// just for wiring up our end-to-end test
+    struct EndToEndArgs<'a> {
+        bitcoin_address: &'a str,
+        bitcoin_signed_message: &'a str,
+        ml_dsa_44_address: &'a str,
+        ml_dsa_44_public_key: &'a str,
+        ml_dsa_44_signed_message: &'a str,
+        slh_dsa_sha2_s_128_address: &'a str,
+        slh_dsa_sha2_s_128_public_key: &'a str,
+        slh_dsa_sha2_s_128_signed_message: &'a str,
+    }
+
     // Helper function that runs a complete end-to-end test using the three functions above
-    async fn run_end_to_end_test(
-        bitcoin_address: &str,
-        bitcoin_signed_message: &str,
-        ml_dsa_44_signed_message: &str,
-        ml_dsa_44_address: &str,
-        ml_dsa_44_public_key: &str,
-    ) -> WsCloseCode {
+    async fn run_end_to_end_test(args: EndToEndArgs<'_>) -> WsCloseCode {
+        let EndToEndArgs {
+            bitcoin_address,
+            bitcoin_signed_message,
+            ml_dsa_44_address,
+            ml_dsa_44_public_key,
+            ml_dsa_44_signed_message,
+            slh_dsa_sha2_s_128_address,
+            slh_dsa_sha2_s_128_public_key,
+            slh_dsa_sha2_s_128_signed_message,
+        } = args;
         // Set up the test servers and get a WebSocket connection
-        let mut ws_stream =
-            set_up_end_to_end_test_servers(bitcoin_address, ml_dsa_44_address).await;
+        let mut ws_stream = set_up_end_to_end_test_servers(
+            bitcoin_address,
+            ml_dsa_44_address,
+            slh_dsa_sha2_s_128_address,
+        )
+        .await;
 
         // Create the proof request with the actual test data
         let proof_request = ProofRequest {
@@ -1355,6 +1783,9 @@ mod tests {
             ml_dsa_44_signed_message: ml_dsa_44_signed_message.to_string(),
             ml_dsa_44_address: ml_dsa_44_address.to_string(),
             ml_dsa_44_public_key: ml_dsa_44_public_key.to_string(),
+            slh_dsa_sha2_s_128_address: slh_dsa_sha2_s_128_address.to_string(),
+            slh_dsa_sha2_s_128_public_key: slh_dsa_sha2_s_128_public_key.to_string(),
+            slh_dsa_sha2_s_128_signed_message: slh_dsa_sha2_s_128_signed_message.to_string(),
         };
 
         // Perform the handshake and get the shared secret
@@ -1370,13 +1801,16 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_end_to_end_p2pkh() {
-        let response = run_end_to_end_test(
-            VALID_BITCOIN_ADDRESS_P2PKH,
-            VALID_BITCOIN_SIGNED_MESSAGE_P2PKH,
-            VALID_ML_DSA_44_SIGNATURE,
-            VALID_ML_DSA_44_ADDRESS,
-            VALID_ML_DSA_44_PUBLIC_KEY,
-        )
+        let response = run_end_to_end_test(EndToEndArgs {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH,
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH,
+            ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE,
+            ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS,
+            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY,
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS,
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY,
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE,
+        })
         .await;
         assert_eq!(response, close_code::NORMAL);
     }
@@ -1384,13 +1818,16 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_end_to_end_p2wpkh() {
-        let response = run_end_to_end_test(
-            VALID_BITCOIN_ADDRESS_P2WPKH,
-            VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH,
-            VALID_ML_DSA_44_SIGNATURE_P2WPKH,
-            VALID_ML_DSA_44_ADDRESS,
-            VALID_ML_DSA_44_PUBLIC_KEY,
-        )
+        let response = run_end_to_end_test(EndToEndArgs {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2WPKH,
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH,
+            ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE_P2WPKH,
+            ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS,
+            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY,
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS,
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY,
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE_P2WPKH,
+        })
         .await;
         assert_eq!(response, close_code::NORMAL);
     }
@@ -1398,13 +1835,16 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_end_to_end_invalid_address() {
-        let response = run_end_to_end_test(
-            INVALID_ADDRESS,
-            VALID_BITCOIN_SIGNED_MESSAGE_P2PKH,
-            VALID_ML_DSA_44_SIGNATURE,
-            VALID_ML_DSA_44_ADDRESS,
-            VALID_ML_DSA_44_PUBLIC_KEY,
-        )
+        let response = run_end_to_end_test(EndToEndArgs {
+            bitcoin_address: INVALID_BITCOIN_ADDRESS,
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH,
+            ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE,
+            ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS,
+            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY,
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS,
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY,
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE,
+        })
         .await;
         assert_eq!(response, close_code::POLICY);
     }
@@ -1413,9 +1853,12 @@ mod tests {
     #[serial]
     async fn test_end_to_end_invalid_handshake_message() {
         // Set up the test servers
-        let mut ws_stream =
-            set_up_end_to_end_test_servers(VALID_BITCOIN_ADDRESS_P2PKH, VALID_ML_DSA_44_ADDRESS)
-                .await;
+        let mut ws_stream = set_up_end_to_end_test_servers(
+            VALID_BITCOIN_ADDRESS_P2PKH,
+            VALID_ML_DSA_44_ADDRESS,
+            VALID_SLH_DSA_SHA2_128_ADDRESS,
+        )
+        .await;
 
         // Send incorrect handshake message with invalid public key
         let incorrect_json = r#"{"public_key":"invalid_base64"}"#;
@@ -1442,9 +1885,12 @@ mod tests {
     #[serial]
     async fn test_end_to_end_binary_message_instead_of_text() {
         // Set up the test servers
-        let mut ws_stream =
-            set_up_end_to_end_test_servers(VALID_BITCOIN_ADDRESS_P2PKH, VALID_ML_DSA_44_ADDRESS)
-                .await;
+        let mut ws_stream = set_up_end_to_end_test_servers(
+            VALID_BITCOIN_ADDRESS_P2PKH,
+            VALID_ML_DSA_44_ADDRESS,
+            VALID_SLH_DSA_SHA2_128_ADDRESS,
+        )
+        .await;
 
         // Send a binary message instead of text for handshake
         ws_stream
@@ -1470,9 +1916,12 @@ mod tests {
     #[serial]
     async fn test_end_to_end_invalid_handshake_format() {
         // Set up the test servers
-        let mut ws_stream =
-            set_up_end_to_end_test_servers(VALID_BITCOIN_ADDRESS_P2PKH, VALID_ML_DSA_44_ADDRESS)
-                .await;
+        let mut ws_stream = set_up_end_to_end_test_servers(
+            VALID_BITCOIN_ADDRESS_P2PKH,
+            VALID_ML_DSA_44_ADDRESS,
+            VALID_SLH_DSA_SHA2_128_ADDRESS,
+        )
+        .await;
 
         // Send malformed handshake message (missing required field)
         let incorrect_format = r#"{"wrong_field": "hello"}"#;
@@ -1499,9 +1948,12 @@ mod tests {
     #[serial]
     async fn test_end_to_end_invalid_proof_request_format() {
         // Set up the test servers
-        let mut ws_stream =
-            set_up_end_to_end_test_servers(VALID_BITCOIN_ADDRESS_P2PKH, VALID_ML_DSA_44_ADDRESS)
-                .await;
+        let mut ws_stream = set_up_end_to_end_test_servers(
+            VALID_BITCOIN_ADDRESS_P2PKH,
+            VALID_ML_DSA_44_ADDRESS,
+            VALID_SLH_DSA_SHA2_128_ADDRESS,
+        )
+        .await;
 
         // Perform valid handshake
         let handshake_result = perform_correct_client_handshake(&mut ws_stream).await;
@@ -1535,12 +1987,25 @@ mod tests {
             ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let (bitcoin_address, _, ml_dsa_44_address, ml_dsa_44_public_key, ml_dsa_44_signed_message) =
-            validate_inputs(&proof_request).unwrap();
+        let ValidatedInputs {
+            bitcoin_address,
+            ml_dsa_44_address,
+            ml_dsa_44_public_key,
+            ml_dsa_44_signed_message,
+            slh_dsa_sha2_s_128_address,
+            ..
+        } = validate_inputs(&proof_request).unwrap();
 
-        let expected_message = generate_expected_message(&bitcoin_address, &ml_dsa_44_address);
+        let expected_message = generate_expected_message(
+            &bitcoin_address,
+            &ml_dsa_44_address,
+            &slh_dsa_sha2_s_128_address,
+        );
 
         let result = verify_ml_dsa_44_ownership(
             &ml_dsa_44_address,
@@ -1556,6 +2021,47 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_slh_dsa_sha2_s_128_hardcoded_signature() {
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
+            ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
+            ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
+            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
+        };
+
+        let ValidatedInputs {
+            bitcoin_address,
+            ml_dsa_44_address,
+            slh_dsa_sha2_s_128_address,
+            slh_dsa_sha2_s_128_public_key,
+            slh_dsa_sha2_s_128_signed_message,
+            ..
+        } = validate_inputs(&proof_request).unwrap();
+
+        let expected_message = generate_expected_message(
+            &bitcoin_address,
+            &ml_dsa_44_address,
+            &slh_dsa_sha2_s_128_address,
+        );
+
+        let result = verify_slh_dsa_sha2_s_128_ownership(
+            &slh_dsa_sha2_s_128_address,
+            &slh_dsa_sha2_s_128_public_key,
+            &slh_dsa_sha2_s_128_signed_message,
+            &expected_message,
+        );
+
+        assert!(
+            result.is_ok(),
+            "SLH-DSA-SHA2-128 verification should succeed with hardcoded signature"
+        );
+    }
+
+    #[test]
     fn test_generate_expected_message() {
         // Setup test data
         let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
@@ -1563,12 +2069,16 @@ mod tests {
             .require_network(Network::Bitcoin)
             .unwrap();
         let ml_dsa_44_address = decode_pq_address(VALID_ML_DSA_44_ADDRESS).unwrap();
+        let slh_dsa_sha2_s_128_address = decode_pq_address(VALID_SLH_DSA_SHA2_128_ADDRESS).unwrap();
 
         // Expected output
-        let expected_message = "I want to permanently link my Bitcoin address 1M36YGRbipdjJ8tjpwnhUS5Njo2ThBVpKm with my post-quantum address yp1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hs5cdx7q";
-
+        let expected_message = "I want to permanently link my Bitcoin address 1JQcr9RQ1Y24Lmnuyjc6Lxbci6E7PpkoQv with my post-quantum addresses: ML-DSA-44 – rh1qpqf3nsu4tuqqwhhx2u5jfxcce6kprx52uc28s50d6c2ft90vnhhdks6m9lmd, SLH-DSA-SHA2-128 – rh1qpqjl8vzuprzhnplx2thzcusrj6ma9wxaes327hfjmqcsqwwxxfm7vqf4w7ay";
         // Call the function
-        let result = generate_expected_message(&bitcoin_address, &ml_dsa_44_address);
+        let result = generate_expected_message(
+            &bitcoin_address,
+            &ml_dsa_44_address,
+            &slh_dsa_sha2_s_128_address,
+        );
 
         // Assert the result
         assert_eq!(

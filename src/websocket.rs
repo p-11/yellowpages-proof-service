@@ -38,7 +38,7 @@ const TIMEOUT_CLOSE_CODE: u16 = 4000; // Custom code for timeout errors
 pub const AES_GCM_NONCE_LENGTH: usize = 12; // length in bytes
 // Maximum size for encrypted proof request (empirically determined)
 // This includes the nonce (12 bytes), the AES-GCM tag (16 bytes), and the encrypted data
-const MAX_ENCRYPTED_PROOF_REQUEST_LENGTH: usize = 5500;
+const MAX_ENCRYPTED_PROOF_REQUEST_LENGTH: usize = 16500;
 const AES_256_KEY_LENGTH: usize = 32; // length in bytes
 
 /// Type alias for WebSocket close codes
