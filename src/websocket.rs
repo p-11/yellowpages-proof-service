@@ -36,6 +36,7 @@ pub const AES_GCM_NONCE_LENGTH: usize = 12; // 96 bits
 // Maximum size for encrypted proof request (empirically determined)
 // This includes the nonce (12 bytes), the AES-GCM tag (16 bytes), and the encrypted data
 const MAX_ENCRYPTED_PROOF_REQUEST_LENGTH: usize = 5500;
+const AES_256_KEY_LENGTH: usize = 32; // 256 bits
 
 /// Type alias for WebSocket close codes
 pub type WsCloseCode = u16;
@@ -209,7 +210,7 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
     Ok(shared_secret)
 }
 
-/// Receives and validates an encrypted proof request from the WebSocket
+/// Receives and validates an AES-256-GCM encrypted proof request from the WebSocket
 async fn receive_proof_request(
     socket: &mut WebSocket,
     shared_secret: SharedKey<MlKem768>,
@@ -242,6 +243,16 @@ async fn receive_proof_request(
     // Extract nonce and ciphertext
     let (nonce_bytes, ciphertext) = encrypted_data.split_at(AES_GCM_NONCE_LENGTH);
     let nonce = Nonce::from_slice(nonce_bytes);
+
+    // Double-check shared secret length before creating AES key, to prevent from_slice panic
+    if shared_secret.len() != AES_256_KEY_LENGTH {
+        eprintln!(
+            "Invalid shared secret length: expected {} bytes, got {}",
+            AES_256_KEY_LENGTH,
+            shared_secret.len()
+        );
+        return Err(close_code::ERROR);
+    }
 
     // Create AES-GCM cipher using the shared secret
     let key = Key::<Aes256Gcm>::from_slice(&shared_secret);
