@@ -1,7 +1,7 @@
 use crate::{Config, ProofRequest, bad_request, ok_or_bad_request, ok_or_internal_error, prove};
 use aes_gcm::{
-    aead::{Aead, KeyInit},
     Aes256Gcm, Key, Nonce,
+    aead::{Aead, KeyInit},
 };
 use axum::{
     extract::State,
@@ -33,7 +33,6 @@ const TIMEOUT_CLOSE_CODE: u16 = 4000; // Custom code for timeout errors
 
 // Constants for AES-GCM
 pub const AES_GCM_NONCE_LENGTH: usize = 12; // 96 bits
-pub const AES_GCM_TAG_LENGTH: usize = 16; // 128 bits
 
 /// Type alias for WebSocket close codes
 pub type WsCloseCode = u16;

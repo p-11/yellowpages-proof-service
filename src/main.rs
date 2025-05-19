@@ -625,23 +625,23 @@ async fn upload_to_data_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aes_gcm::{
+        Aes256Gcm, Key, Nonce,
+        aead::{Aead, KeyInit},
+    };
     use axum::{http::StatusCode, response::IntoResponse, routing::post};
     use futures_util::{SinkExt, StreamExt};
     use ml_dsa::{KeyGen, signature::Signer};
-    use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, kem::Decapsulate, SharedKey};
+    use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, SharedKey, kem::Decapsulate};
     use pq_address::{
         AddressParams as PqAddressParams, Network as PqNetwork, Version as PqVersion,
         encode_address as pq_encode_address,
     };
-    use rand::{SeedableRng, rngs::StdRng, RngCore};
+    use rand::{RngCore, SeedableRng, rngs::StdRng};
     use serial_test::serial;
     use tokio::net::TcpListener;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
-    use aes_gcm::{
-        aead::{Aead, KeyInit},
-        Aes256Gcm, Key, Nonce,
-    };
     use websocket::AES_GCM_NONCE_LENGTH;
 
     // Add a constant for our mock attestation document
