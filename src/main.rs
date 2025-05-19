@@ -521,7 +521,7 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
 
     let slh_dsa_sha2_s_128_signed_message = ok_or_bad_request!(
         SlhDsaSignature::<Sha2_128s>::try_from(&slh_dsa_sha2_s_128_signed_message_bytes[..]),
-        "Failed to parse ML-DSA 44 signature"
+        "Failed to parse SLH-DSA SHA2-S-128 signature"
     );
 
     println!("Successfully parsed SLH-DSA SHA2-S-128 inputs");
