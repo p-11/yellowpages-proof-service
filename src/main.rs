@@ -625,19 +625,24 @@ async fn upload_to_data_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aes_gcm::{
+        Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
+        aead::{Aead, KeyInit},
+    };
     use axum::{http::StatusCode, response::IntoResponse, routing::post};
     use futures_util::{SinkExt, StreamExt};
     use ml_dsa::{KeyGen, signature::Signer};
-    use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, kem::Decapsulate};
+    use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, SharedKey, kem::Decapsulate};
     use pq_address::{
         AddressParams as PqAddressParams, Network as PqNetwork, Version as PqVersion,
         encode_address as pq_encode_address,
     };
-    use rand::{SeedableRng, rngs::StdRng};
+    use rand::{RngCore, SeedableRng, rngs::StdRng};
     use serial_test::serial;
     use tokio::net::TcpListener;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
+    use websocket::AES_GCM_NONCE_LENGTH;
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
@@ -1211,7 +1216,7 @@ mod tests {
         ws_stream: &mut tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
-    ) -> Result<(), WsCloseCode> {
+    ) -> Result<SharedKey<MlKem768>, WsCloseCode> {
         let mut rng = StdRng::from_entropy();
         let (decapsulation_key, encapsulation_key) = MlKem768::generate(&mut rng);
 
@@ -1250,11 +1255,11 @@ mod tests {
                 .expect("Invalid ciphertext format");
 
             // Decapsulate to get the shared secret
-            let _shared_secret = decapsulation_key
+            let shared_secret = decapsulation_key
                 .decapsulate(&ciphertext)
                 .expect("Failed to decapsulate");
 
-            Ok(())
+            Ok(shared_secret)
         } else {
             // Unexpected response - this should never happen in tests
             println!("Unexpected response type");
@@ -1268,6 +1273,7 @@ mod tests {
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
         proof_request: &ProofRequest,
+        shared_secret: SharedKey<MlKem768>,
     ) -> WsCloseCode {
         // Construct proof request JSON explicitly
         let proof_request_json = format!(
@@ -1285,8 +1291,34 @@ mod tests {
             proof_request.ml_dsa_44_public_key
         );
 
+        let proof_request_bytes = proof_request_json.as_bytes();
+
+        // Create AES-GCM cipher
+        let aes_256_gcm_key = Aes256GcmKey::<Aes256Gcm>::from_slice(&shared_secret);
+        let aes_256_gcm_cipher = Aes256Gcm::new(aes_256_gcm_key);
+
+        // Generate a random nonce
+        let mut rng = StdRng::from_entropy();
+        let mut aes_256_gcm_nonce_bytes = [0u8; AES_GCM_NONCE_LENGTH];
+        rng.fill_bytes(&mut aes_256_gcm_nonce_bytes);
+        let aes_256_gcm_nonce = Aes256GcmNonce::from_slice(&aes_256_gcm_nonce_bytes);
+
+        // Encrypt the proof request
+        let aes_256_gcm_ciphertext = aes_256_gcm_cipher
+            .encrypt(aes_256_gcm_nonce, proof_request_bytes)
+            .expect("Failed to encrypt proof request");
+
+        // Combine nonce and ciphertext into final message
+        let mut aes_256_gcm_encrypted_data =
+            Vec::with_capacity(AES_GCM_NONCE_LENGTH + aes_256_gcm_ciphertext.len());
+        aes_256_gcm_encrypted_data.extend_from_slice(&aes_256_gcm_nonce_bytes);
+        aes_256_gcm_encrypted_data.extend_from_slice(&aes_256_gcm_ciphertext);
+
+        // Send the encrypted message
         ws_stream
-            .send(TungsteniteMessage::Text(proof_request_json.into()))
+            .send(TungsteniteMessage::Binary(
+                aes_256_gcm_encrypted_data.into(),
+            ))
             .await
             .unwrap();
 
@@ -1325,13 +1357,14 @@ mod tests {
             ml_dsa_44_public_key: ml_dsa_44_public_key.to_string(),
         };
 
-        // Perform the handshake
-        if let Err(code) = perform_correct_client_handshake(&mut ws_stream).await {
-            return code;
-        }
+        // Perform the handshake and get the shared secret
+        let shared_secret = match perform_correct_client_handshake(&mut ws_stream).await {
+            Ok(secret) => secret,
+            Err(code) => return code,
+        };
 
         // Send the proof request and get the result
-        send_proof_request(&mut ws_stream, &proof_request).await
+        send_proof_request(&mut ws_stream, &proof_request, shared_secret).await
     }
 
     #[tokio::test]
