@@ -1,9 +1,5 @@
 mod websocket;
 
-use aes_gcm::{
-    Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
-    aead::{Aead, KeyInit},
-};
 use axum::{Json, Router, extract::State, extract::ws::close_code, http::Method, routing::get};
 use base64::{Engine, engine::general_purpose};
 use bitcoin::hashes::{Hash, sha256};
