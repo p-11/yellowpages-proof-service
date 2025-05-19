@@ -1294,28 +1294,31 @@ mod tests {
         let proof_request_bytes = proof_request_json.as_bytes();
 
         // Create AES-GCM cipher
-        let key = Aes256GcmKey::<Aes256Gcm>::from_slice(&shared_secret);
-        let cipher = Aes256Gcm::new(key);
+        let aes_256_gcm_key = Aes256GcmKey::<Aes256Gcm>::from_slice(&shared_secret);
+        let aes_256_gcm_cipher = Aes256Gcm::new(aes_256_gcm_key);
 
         // Generate a random nonce
         let mut rng = StdRng::from_entropy();
-        let mut nonce_bytes = [0u8; AES_GCM_NONCE_LENGTH];
-        rng.fill_bytes(&mut nonce_bytes);
-        let nonce = Aes256GcmNonce::from_slice(&nonce_bytes);
+        let mut aes_256_gcm_nonce_bytes = [0u8; AES_GCM_NONCE_LENGTH];
+        rng.fill_bytes(&mut aes_256_gcm_nonce_bytes);
+        let aes_256_gcm_nonce = Aes256GcmNonce::from_slice(&aes_256_gcm_nonce_bytes);
 
         // Encrypt the proof request
-        let ciphertext = cipher
-            .encrypt(nonce, proof_request_bytes)
+        let aes_256_gcm_ciphertext = aes_256_gcm_cipher
+            .encrypt(aes_256_gcm_nonce, proof_request_bytes)
             .expect("Failed to encrypt proof request");
 
         // Combine nonce and ciphertext into final message
-        let mut encrypted_message = Vec::with_capacity(AES_GCM_NONCE_LENGTH + ciphertext.len());
-        encrypted_message.extend_from_slice(&nonce_bytes);
-        encrypted_message.extend_from_slice(&ciphertext);
+        let mut aes_256_gcm_encrypted_data =
+            Vec::with_capacity(AES_GCM_NONCE_LENGTH + aes_256_gcm_ciphertext.len());
+        aes_256_gcm_encrypted_data.extend_from_slice(&aes_256_gcm_nonce_bytes);
+        aes_256_gcm_encrypted_data.extend_from_slice(&aes_256_gcm_ciphertext);
 
         // Send the encrypted message
         ws_stream
-            .send(TungsteniteMessage::Binary(encrypted_message.into()))
+            .send(TungsteniteMessage::Binary(
+                aes_256_gcm_encrypted_data.into(),
+            ))
             .await
             .unwrap();
 

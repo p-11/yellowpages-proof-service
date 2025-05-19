@@ -224,25 +224,26 @@ async fn receive_proof_request(
     };
 
     // Ensure message is binary (encrypted data)
-    let Ok(WsMessage::Binary(encrypted_data)) = received_message else {
+    let Ok(WsMessage::Binary(aes_256_gcm_encrypted_data)) = received_message else {
         bad_request!("Expected binary message for encrypted proof request, got something else");
     };
 
     // The first AES_GCM_NONCE_LENGTH bytes are the nonce
-    if encrypted_data.len() <= AES_GCM_NONCE_LENGTH {
+    if aes_256_gcm_encrypted_data.len() <= AES_GCM_NONCE_LENGTH {
         bad_request!("Encrypted data too short to contain nonce");
     }
-    if encrypted_data.len() > MAX_ENCRYPTED_PROOF_REQUEST_LENGTH {
+    if aes_256_gcm_encrypted_data.len() > MAX_ENCRYPTED_PROOF_REQUEST_LENGTH {
         bad_request!(
             "Encrypted data too large: {} bytes (max allowed: {})",
-            encrypted_data.len(),
+            aes_256_gcm_encrypted_data.len(),
             MAX_ENCRYPTED_PROOF_REQUEST_LENGTH
         );
     }
 
     // Extract nonce and ciphertext
-    let (nonce_bytes, ciphertext) = encrypted_data.split_at(AES_GCM_NONCE_LENGTH);
-    let nonce = Aes256GcmNonce::from_slice(nonce_bytes);
+    let (aes_256_gcm_nonce_bytes, aes_256_gcm_ciphertext) =
+        aes_256_gcm_encrypted_data.split_at(AES_GCM_NONCE_LENGTH);
+    let aes_256_gcm_nonce = Aes256GcmNonce::from_slice(aes_256_gcm_nonce_bytes);
 
     // Double-check shared secret length before creating AES key, to prevent from_slice panic
     if shared_secret.len() != AES_256_KEY_LENGTH {
@@ -255,18 +256,18 @@ async fn receive_proof_request(
     }
 
     // Create AES-GCM cipher using the shared secret
-    let key = Aes256GcmKey::<Aes256Gcm>::from_slice(&shared_secret);
-    let cipher = Aes256Gcm::new(key);
+    let aes_256_gcm_key = Aes256GcmKey::<Aes256Gcm>::from_slice(&shared_secret);
+    let aes_256_gcm_cipher = Aes256Gcm::new(aes_256_gcm_key);
 
     // Decrypt the data
-    let decrypted_data = ok_or_bad_request!(
-        cipher.decrypt(nonce, ciphertext),
+    let decrypted_bytes = ok_or_bad_request!(
+        aes_256_gcm_cipher.decrypt(aes_256_gcm_nonce, aes_256_gcm_ciphertext),
         "Failed to decrypt proof request"
     );
 
     // Parse the decrypted data as a ProofRequest
     let proof_request = ok_or_bad_request!(
-        serde_json::from_slice(&decrypted_data),
+        serde_json::from_slice(&decrypted_bytes),
         "Failed to parse decrypted proof request JSON"
     );
 
