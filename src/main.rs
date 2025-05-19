@@ -29,6 +29,7 @@ struct AttestationRequest {
 }
 
 #[derive(Serialize, Deserialize)]
+#[allow(clippy::struct_field_names)]
 struct UserData {
     bitcoin_address: String,
     ml_dsa_44_address: String,
@@ -341,7 +342,7 @@ async fn prove(config: Config, proof_request: ProofRequest) -> WsCloseCode {
     close_code::NORMAL
 }
 
-fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
+fn validate_lengths(proof_request: &ProofRequest) -> Result<(), WsCloseCode> {
     // Validate that all required fields have reasonable lengths to avoid decoding large amounts of data
     if proof_request.bitcoin_address.len() > 100 {
         bad_request!(
@@ -398,6 +399,14 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
             proof_request.slh_dsa_sha2_s_128_public_key.len()
         );
     }
+
+    // If all validations pass, return Ok
+    Ok(())
+}
+
+fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
+    // Validate that all required fields have reasonable lengths to avoid decoding large amounts of data
+    validate_lengths(proof_request)?;
 
     // Parse the Bitcoin address
     let parsed_bitcoin_address = ok_or_bad_request!(
