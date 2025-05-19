@@ -21,7 +21,6 @@ pq_address = "0.2.0"
 ml-kem = "0.2.1"
 rand = "0.8.5"
 
-
 [dev-dependencies]
 serial_test = "3.2.0"
 tokio-tungstenite = "0.26.2"
