@@ -65,6 +65,7 @@ struct UploadProofRequest {
     proof: String,
 }
 
+#[derive(Debug)]
 struct ValidatedInputs {
     pub bitcoin_address: BitcoinAddress,
     pub bitcoin_signed_message: BitcoinMessageSignature,
@@ -149,6 +150,16 @@ impl FromStr for Environment {
     }
 }
 
+impl Environment {
+    /// Given an Environment, what `PqNetwork` should we be on?
+    fn expected_pq_address_network(&self) -> PqNetwork {
+        match self {
+            Environment::Production => PqNetwork::Mainnet,
+            Environment::Development => PqNetwork::Testnet,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Config {
     data_layer_url: String,
@@ -196,17 +207,6 @@ impl Config {
         Ok(())
     }
 
-    // Basic sanity check to catch empty/incorrect environment variables.
-    fn sanity_check_environment(env: &str) -> Result<(), String> {
-        if env.is_empty() {
-            return Err("Environment variable cannot be empty".to_string());
-        }
-        if env != "production" && env != "development" {
-            return Err("Environment must be one of: production or development".to_string());
-        }
-        Ok(())
-    }
-
     fn from_env() -> Result<Self, String> {
         let data_layer_url = env::var("YP_DS_API_BASE_URL")
             .map_err(|_| "YP_DS_API_BASE_URL environment variable not set")?;
@@ -221,7 +221,6 @@ impl Config {
 
         let env_str =
             env::var("ENVIRONMENT").map_err(|_| "ENVIRONMENT environment variable not set")?;
-        Self::sanity_check_environment(&env_str)?;
         let environment = env_str
             .parse::<Environment>()
             .map_err(|e| format!("Invalid ENVIRONMENT: {e}"))?;
@@ -497,11 +496,13 @@ fn validate_inputs(proof_request: &ProofRequest, config: &Config) -> ValidationR
         "Failed to decode ML-DSA 44 address"
     );
 
-    // If production, check the address is for prod
-    if config.environment == Environment::Production
-        && ml_dsa_44_address.network != PqNetwork::Mainnet
-    {
-        bad_request!("ML-DSA 44 address must be for mainnet");
+    // Check if the address is for the expected network
+    if ml_dsa_44_address.network != config.environment.expected_pq_address_network() {
+        bad_request!(
+            "ML-DSA 44 address must be for {:?} when the environment is {:?}",
+            config.environment.expected_pq_address_network(),
+            config.environment
+        );
     }
 
     // Check if the address is an ML-DSA 44 address
@@ -544,11 +545,13 @@ fn validate_inputs(proof_request: &ProofRequest, config: &Config) -> ValidationR
         "Failed to decode SLH-DSA SHA2-S-128 address"
     );
 
-    // If production, check the address is for prod
-    if config.environment == Environment::Production
-        && slh_dsa_sha2_s_128_address.network != PqNetwork::Mainnet
-    {
-        bad_request!("SLH-DSA SHA2-S-128 address must be for mainnet");
+    // Check if the address is for the expected network
+    if slh_dsa_sha2_s_128_address.network != config.environment.expected_pq_address_network() {
+        bad_request!(
+            "SLH-DSA SHA2-S-128 address must be for {:?} when the environment is {:?}",
+            config.environment.expected_pq_address_network(),
+            config.environment
+        );
     }
 
     // Check if the address is an SLH-DSA SHA2-S-128 address
@@ -969,6 +972,12 @@ mod tests {
 
     #[test]
     fn test_validate_inputs_valid_data() {
+        let config = Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: "1.1.0".to_string(),
+            environment: Environment::Development,
+        };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
@@ -980,12 +989,59 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request, &test_config());
+        let result = validate_inputs(&proof_request, &config);
         assert!(result.is_ok(), "Validation should pass with valid inputs");
     }
 
+    const PROD_ML_DSA_44_ADDRESS: &str =
+        "yp1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hs5cdx7q";
+    const DEV_ML_DSA_44_ADDRESS: &str =
+        "rh1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hsmmfzpd";
+    const PROD_SLH_DSA_SHA2_128_ADDRESS: &str =
+        "yp1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5smc3rlz";
+    const DEV_SLH_DSA_SHA2_128_ADDRESS: &str =
+        "rh1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5s5m48q0";
+
     #[test]
-    fn test_validate_inputs_prod_addresses_in_prod_env() {
+    fn test_validate_inputs_invalid_environment() {
+        let config = Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: "1.1.0".to_string(),
+            environment: Environment::Development,
+        };
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
+            ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
+            ml_dsa_44_address: PROD_ML_DSA_44_ADDRESS.to_string(),
+            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: DEV_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
+        };
+        let err = validate_inputs(&proof_request, &config).unwrap_err();
+        assert_eq!(
+            err,
+            close_code::POLICY,
+            "Expected a POLICY error for a network mismatch, got {err}",
+        );
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
+            ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
+            ml_dsa_44_address: DEV_ML_DSA_44_ADDRESS.to_string(),
+            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: PROD_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
+        };
+        let err = validate_inputs(&proof_request, &config).unwrap_err();
+        assert_eq!(
+            err,
+            close_code::POLICY,
+            "Expected a POLICY error for a network mismatch, got {err}",
+        );
         let config = Config {
             data_layer_url: "http://127.0.0.1:9998".to_string(),
             data_layer_api_key: "mock_api_key".to_string(),
@@ -996,63 +1052,35 @@ mod tests {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
             ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
-            ml_dsa_44_address: "yp1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hs5cdx7q"
-                .to_string(),
+            ml_dsa_44_address: DEV_ML_DSA_44_ADDRESS.to_string(),
             ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
-            slh_dsa_sha2_s_128_address:
-                "yp1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5smc3rlz".to_string(),
+            slh_dsa_sha2_s_128_address: PROD_SLH_DSA_SHA2_128_ADDRESS.to_string(),
             slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
-        let result = validate_inputs(&proof_request, &config);
-        assert!(
-            result.is_ok(),
-            "Validation should pass with production address in production environment"
+        let err = validate_inputs(&proof_request, &config).unwrap_err();
+        assert_eq!(
+            err,
+            close_code::POLICY,
+            "Expected a POLICY error for a network mismatch, got {err}",
         );
-    }
-
-    #[test]
-    fn test_validate_inputs_dev_addresses_in_prod_env() {
-        let config = Config {
-            data_layer_url: "http://127.0.0.1:9998".to_string(),
-            data_layer_api_key: "mock_api_key".to_string(),
-            version: "1.1.0".to_string(),
-            environment: Environment::Production,
-        };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
             ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
-            ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
+            ml_dsa_44_address: PROD_ML_DSA_44_ADDRESS.to_string(),
             ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
-            slh_dsa_sha2_s_128_address:
-                "yp1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5smc3rlz".to_string(),
+            slh_dsa_sha2_s_128_address: DEV_SLH_DSA_SHA2_128_ADDRESS.to_string(),
             slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
-        let result = validate_inputs(&proof_request, &config);
-        assert!(
-            result.is_err(),
-            "Validation should fail with dev ml_dsa_44_address in production environment"
-        );
-        let proof_request = ProofRequest {
-            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
-            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
-            ml_dsa_44_signed_message:
-                "yp1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hs5cdx7q".to_string(),
-            ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
-            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
-            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
-            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
-            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
-        };
-        let result = validate_inputs(&proof_request, &config);
-        assert!(
-            result.is_err(),
-            "Validation should fail with dev slh_dsa_sha2_s_128_address in production environment"
+        let err = validate_inputs(&proof_request, &config).unwrap_err();
+        assert_eq!(
+            err,
+            close_code::POLICY,
+            "Expected a POLICY error for a network mismatch, got {err}",
         );
     }
-
     #[test]
     fn test_validate_inputs_empty_address() {
         let proof_request = ProofRequest {
@@ -1616,14 +1644,31 @@ mod tests {
 
     #[test]
     fn test_sanity_check_environment() {
-        // Valid cases - only "production" and "development"
-        assert!(Config::sanity_check_environment("production").is_ok());
-        assert!(Config::sanity_check_environment("development").is_ok());
+        // valid values
+        assert_eq!(
+            Environment::from_str("production"),
+            Ok(Environment::Production)
+        );
+        assert_eq!(
+            Environment::from_str("development"),
+            Ok(Environment::Development)
+        );
 
-        // Invalid case - empty string
-        assert!(Config::sanity_check_environment("").is_err());
-        assert!(Config::sanity_check_environment(" ").is_err());
-        assert!(Config::sanity_check_environment("foo").is_err());
+        // empty string should be rejected
+        assert_eq!(
+            Environment::from_str(""),
+            Err("Environment must be `production` or `development`")
+        );
+
+        // anything else is rejected with the generic message
+        assert_eq!(
+            Environment::from_str(" "),
+            Err("Environment must be `production` or `development`")
+        );
+        assert_eq!(
+            Environment::from_str("foo"),
+            Err("Environment must be `production` or `development`")
+        );
     }
 
     #[test]
