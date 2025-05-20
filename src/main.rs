@@ -11,7 +11,7 @@ use ml_dsa::{
     VerifyingKey as MlDsaVerifyingKey, signature::Verifier as MlDsaVerifier,
 };
 use pq_address::{
-    DecodedAddress as DecodedPqAddress, PubKeyType as PqPubKeyType,
+    DecodedAddress as DecodedPqAddress, Network as PqNetwork, PubKeyType as PqPubKeyType,
     decode_address as decode_pq_address,
 };
 use reqwest::Client;
@@ -65,6 +65,7 @@ struct UploadProofRequest {
     proof: String,
 }
 
+#[derive(Debug)]
 struct ValidatedInputs {
     pub bitcoin_address: BitcoinAddress,
     pub bitcoin_signed_message: BitcoinMessageSignature,
@@ -132,11 +133,39 @@ macro_rules! ok_or_internal_error {
     };
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Environment {
+    Production,
+    Development,
+}
+
+impl FromStr for Environment {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "production" => Ok(Environment::Production),
+            "development" => Ok(Environment::Development),
+            _ => Err("Environment must be `production` or `development`"),
+        }
+    }
+}
+
+impl Environment {
+    /// Given an Environment, what `PqNetwork` should we be on?
+    fn expected_pq_address_network(&self) -> PqNetwork {
+        match self {
+            Environment::Production => PqNetwork::Mainnet,
+            Environment::Development => PqNetwork::Testnet,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Config {
     data_layer_url: String,
     data_layer_api_key: String,
     version: String,
+    environment: Environment,
 }
 
 impl Config {
@@ -190,10 +219,17 @@ impl Config {
         let version = env::var("VERSION").map_err(|_| "VERSION environment variable not set")?;
         Self::sanity_check_semver(&version)?;
 
+        let env_str =
+            env::var("ENVIRONMENT").map_err(|_| "ENVIRONMENT environment variable not set")?;
+        let environment = env_str
+            .parse::<Environment>()
+            .map_err(|e| format!("Invalid ENVIRONMENT: {e}"))?;
+
         Ok(Config {
             data_layer_url,
             data_layer_api_key,
             version,
+            environment,
         })
     }
 }
@@ -271,7 +307,7 @@ async fn prove(config: Config, proof_request: ProofRequest) -> WsCloseCode {
         slh_dsa_sha2_s_128_address,
         slh_dsa_sha2_s_128_public_key,
         slh_dsa_sha2_s_128_signed_message,
-    } = match validate_inputs(&proof_request) {
+    } = match validate_inputs(&proof_request, &config) {
         Ok(result) => result,
         Err(code) => return code,
     };
@@ -404,10 +440,7 @@ fn validate_lengths(proof_request: &ProofRequest) -> Result<(), WsCloseCode> {
     Ok(())
 }
 
-fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
-    // Validate that all required fields have reasonable lengths to avoid decoding large amounts of data
-    validate_lengths(proof_request)?;
-
+fn validate_bitcoin_inputs(proof_request: &ProofRequest) -> Result<BitcoinAddress, WsCloseCode> {
     // Parse the Bitcoin address
     let parsed_bitcoin_address = ok_or_bad_request!(
         BitcoinAddress::from_str(&proof_request.bitcoin_address),
@@ -435,6 +468,16 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
 
     println!("Successfully parsed Bitcoin address: {bitcoin_address}");
 
+    // Return the parsed Bitcoin address
+    Ok(bitcoin_address)
+}
+
+fn validate_inputs(proof_request: &ProofRequest, config: &Config) -> ValidationResult {
+    // Validate that all required fields have reasonable lengths to avoid decoding large amounts of data
+    validate_lengths(proof_request)?;
+    // Validate Bitcoin address
+    let bitcoin_address = validate_bitcoin_inputs(proof_request)?;
+
     // Decode the base64-encoded message
     let decoded_bitcoin_signed_message = ok_or_bad_request!(
         general_purpose::STANDARD.decode(&proof_request.bitcoin_signed_message),
@@ -452,6 +495,15 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
         decode_pq_address(&proof_request.ml_dsa_44_address),
         "Failed to decode ML-DSA 44 address"
     );
+
+    // Check if the address is for the expected network
+    if ml_dsa_44_address.network != config.environment.expected_pq_address_network() {
+        bad_request!(
+            "ML-DSA 44 address must be for {:?} when the environment is {:?}",
+            config.environment.expected_pq_address_network(),
+            config.environment
+        );
+    }
 
     // Check if the address is an ML-DSA 44 address
     if ml_dsa_44_address.pubkey_type != PqPubKeyType::MlDsa44 {
@@ -492,6 +544,15 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
         decode_pq_address(&proof_request.slh_dsa_sha2_s_128_address),
         "Failed to decode SLH-DSA SHA2-S-128 address"
     );
+
+    // Check if the address is for the expected network
+    if slh_dsa_sha2_s_128_address.network != config.environment.expected_pq_address_network() {
+        bad_request!(
+            "SLH-DSA SHA2-S-128 address must be for {:?} when the environment is {:?}",
+            config.environment.expected_pq_address_network(),
+            config.environment
+        );
+    }
 
     // Check if the address is an SLH-DSA SHA2-S-128 address
     if slh_dsa_sha2_s_128_address.pubkey_type != PqPubKeyType::SlhDsaSha2S128 {
@@ -787,6 +848,15 @@ mod tests {
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
 
+    fn test_config() -> Config {
+        Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: "1.1.0".to_string(),
+            environment: Environment::Development,
+        }
+    }
+
     // Mock handler for attestation requests
     #[allow(clippy::needless_pass_by_value)]
     fn mock_attestation_handler(
@@ -902,6 +972,12 @@ mod tests {
 
     #[test]
     fn test_validate_inputs_valid_data() {
+        let config = Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: "1.1.0".to_string(),
+            environment: Environment::Development,
+        };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
@@ -913,10 +989,98 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &config);
         assert!(result.is_ok(), "Validation should pass with valid inputs");
     }
 
+    const PROD_ML_DSA_44_ADDRESS: &str =
+        "yp1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hs5cdx7q";
+    const DEV_ML_DSA_44_ADDRESS: &str =
+        "rh1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hsmmfzpd";
+    const PROD_SLH_DSA_SHA2_128_ADDRESS: &str =
+        "yp1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5smc3rlz";
+    const DEV_SLH_DSA_SHA2_128_ADDRESS: &str =
+        "rh1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5s5m48q0";
+
+    #[test]
+    fn test_validate_inputs_invalid_environment() {
+        let config = Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: "1.1.0".to_string(),
+            environment: Environment::Development,
+        };
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
+            ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
+            ml_dsa_44_address: PROD_ML_DSA_44_ADDRESS.to_string(),
+            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: DEV_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
+        };
+        let err = validate_inputs(&proof_request, &config).unwrap_err();
+        assert_eq!(
+            err,
+            close_code::POLICY,
+            "Expected a POLICY error for a network mismatch, got {err}",
+        );
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
+            ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
+            ml_dsa_44_address: DEV_ML_DSA_44_ADDRESS.to_string(),
+            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: PROD_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
+        };
+        let err = validate_inputs(&proof_request, &config).unwrap_err();
+        assert_eq!(
+            err,
+            close_code::POLICY,
+            "Expected a POLICY error for a network mismatch, got {err}",
+        );
+        let config = Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: "1.1.0".to_string(),
+            environment: Environment::Production,
+        };
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
+            ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
+            ml_dsa_44_address: DEV_ML_DSA_44_ADDRESS.to_string(),
+            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: PROD_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
+        };
+        let err = validate_inputs(&proof_request, &config).unwrap_err();
+        assert_eq!(
+            err,
+            close_code::POLICY,
+            "Expected a POLICY error for a network mismatch, got {err}",
+        );
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
+            ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
+            ml_dsa_44_address: PROD_ML_DSA_44_ADDRESS.to_string(),
+            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: DEV_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
+        };
+        let err = validate_inputs(&proof_request, &config).unwrap_err();
+        assert_eq!(
+            err,
+            close_code::POLICY,
+            "Expected a POLICY error for a network mismatch, got {err}",
+        );
+    }
     #[test]
     fn test_validate_inputs_empty_address() {
         let proof_request = ProofRequest {
@@ -930,7 +1094,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(result.is_err(), "Validation should fail with empty address");
     }
 
@@ -947,7 +1111,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(
             result.is_err(),
             "Validation should fail with invalid address"
@@ -967,7 +1131,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(result.is_err(), "Validation should fail with p2tr address");
     }
 
@@ -984,7 +1148,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(
             result.is_err(),
             "Validation should fail with short signature"
@@ -1004,7 +1168,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(
             result.is_err(),
             "Validation should fail with long signature"
@@ -1024,7 +1188,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(
             result.is_err(),
             "Validation should fail with invalid base64"
@@ -1050,7 +1214,7 @@ mod tests {
             ml_dsa_44_address,
             slh_dsa_sha2_s_128_address,
             ..
-        } = validate_inputs(&proof_request).unwrap();
+        } = validate_inputs(&proof_request, &test_config()).unwrap();
         let expected_message = generate_expected_message(
             &bitcoin_address,
             &ml_dsa_44_address,
@@ -1085,7 +1249,7 @@ mod tests {
             ml_dsa_44_address,
             slh_dsa_sha2_s_128_address,
             ..
-        } = validate_inputs(&proof_request).unwrap();
+        } = validate_inputs(&proof_request, &test_config()).unwrap();
         let expected_message = generate_expected_message(
             &bitcoin_address,
             &ml_dsa_44_address,
@@ -1113,7 +1277,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(
             result.is_err(),
             "Validation should fail with invalid ML-DSA address"
@@ -1133,7 +1297,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(
             result.is_err(),
             "Validation should fail with invalid SLH-DSA address"
@@ -1153,7 +1317,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
 
         assert!(
             result.is_ok(),
@@ -1181,7 +1345,7 @@ mod tests {
             ml_dsa_44_address,
             slh_dsa_sha2_s_128_address,
             ..
-        } = validate_inputs(&proof_request).unwrap();
+        } = validate_inputs(&proof_request, &test_config()).unwrap();
         let expected_message = generate_expected_message(
             &bitcoin_address,
             &ml_dsa_44_address,
@@ -1503,6 +1667,35 @@ mod tests {
     }
 
     #[test]
+    fn test_sanity_check_environment() {
+        // valid values
+        assert_eq!(
+            Environment::from_str("production"),
+            Ok(Environment::Production)
+        );
+        assert_eq!(
+            Environment::from_str("development"),
+            Ok(Environment::Development)
+        );
+
+        // empty string should be rejected
+        assert_eq!(
+            Environment::from_str(""),
+            Err("Environment must be `production` or `development`")
+        );
+
+        // anything else is rejected with the generic message
+        assert_eq!(
+            Environment::from_str(" "),
+            Err("Environment must be `production` or `development`")
+        );
+        assert_eq!(
+            Environment::from_str("foo"),
+            Err("Environment must be `production` or `development`")
+        );
+    }
+
+    #[test]
     fn test_sanity_check_url() {
         // Valid case - http:// in test
         assert!(Config::sanity_check_url("http://anything").is_ok());
@@ -1529,6 +1722,7 @@ mod tests {
             data_layer_url: "http://127.0.0.1:9998".to_string(),
             data_layer_api_key: "mock_api_key".to_string(),
             version: TEST_VERSION.to_string(),
+            environment: Environment::Development,
         }))
         .await;
         assert_eq!(body["status"], "ok");
@@ -1610,6 +1804,7 @@ mod tests {
             data_layer_url: "http://127.0.0.1:9998".to_string(),
             data_layer_api_key: "mock_api_key".to_string(),
             version: TEST_VERSION.to_string(),
+            environment: Environment::Development,
         };
 
         // Start a WebSocket server with the main WebSocket handler
@@ -2023,7 +2218,7 @@ mod tests {
             ml_dsa_44_signed_message,
             slh_dsa_sha2_s_128_address,
             ..
-        } = validate_inputs(&proof_request).unwrap();
+        } = validate_inputs(&proof_request, &test_config()).unwrap();
 
         let expected_message = generate_expected_message(
             &bitcoin_address,
@@ -2064,7 +2259,7 @@ mod tests {
             slh_dsa_sha2_s_128_public_key,
             slh_dsa_sha2_s_128_signed_message,
             ..
-        } = validate_inputs(&proof_request).unwrap();
+        } = validate_inputs(&proof_request, &test_config()).unwrap();
 
         let expected_message = generate_expected_message(
             &bitcoin_address,
