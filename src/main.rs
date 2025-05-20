@@ -1616,7 +1616,7 @@ mod tests {
 
     #[test]
     fn test_sanity_check_environment() {
-        // Valid cases - any non-empty string
+        // Valid cases - only "production" and "development"
         assert!(Config::sanity_check_environment("production").is_ok());
         assert!(Config::sanity_check_environment("development").is_ok());
 
