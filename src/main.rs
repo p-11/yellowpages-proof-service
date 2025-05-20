@@ -1033,7 +1033,7 @@ mod tests {
         let result = validate_inputs(&proof_request, &config);
         assert!(
             result.is_err(),
-            "Validation should fail with dev address in production environment"
+            "Validation should fail with dev ml_dsa_44_address in production environment"
         );
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
@@ -1049,7 +1049,7 @@ mod tests {
         let result = validate_inputs(&proof_request, &config);
         assert!(
             result.is_err(),
-            "Validation should fail with dev address in production environment"
+            "Validation should fail with dev slh_dsa_sha2_s_128_address in production environment"
         );
     }
 
