@@ -930,6 +930,7 @@ mod tests {
         routing::post,
     };
     use futures_util::{SinkExt, StreamExt};
+    use http::{HeaderMap, Request, header};
     use ml_dsa::{KeyGen, signature::Signer};
     use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, SharedKey, kem::Decapsulate};
     use pq_address::{
