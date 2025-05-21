@@ -190,10 +190,10 @@ impl Environment {
                 // build a single matcher that first checks exact list,
                 // then falls back to the "yellowpages-client*.vercel.app" rule:
                 AllowOrigin::predicate(move |hv, _| {
-                    let s = hv.to_str().unwrap_or("");
                     if dev_allowed.iter().any(|u| u.as_bytes() == hv.as_bytes()) {
                         true
                     } else {
+                        let s = hv.to_str().unwrap_or("");
                         s.starts_with("https://yellowpages-client") && s.ends_with(".vercel.app")
                     }
                 })
@@ -1068,7 +1068,6 @@ mod tests {
             "https://www.yellowpages-development.xyz",
         ] {
             let headers = send_req(&app, origin).await;
-            println!("headers: {headers:?}");
             assert_eq!(
                 headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
                 *origin,
