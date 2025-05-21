@@ -321,7 +321,8 @@ async fn main() {
     let config = match Config::from_env() {
         Ok(config) => config,
         Err(e) => {
-            log::error!("Failed to load config: {e}");
+            // This cannot use log::error!() because the logger is not set up yet
+            eprintln!("Failed to load config: {e}");
             std::process::exit(1);
         }
     };
