@@ -122,6 +122,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "axum-helmet"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95d1115afac4786f6d750cc8e18bb198aa09793c616c7618cf85d778294f8376"
+dependencies = [
+ "axum",
+ "helmet-core",
+ "http",
+ "pin-project-lite",
+ "tokio",
+ "tower",
+ "tower-service",
+]
+
+[[package]]
 name = "backtrace"
 version = "0.3.75"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -505,6 +520,12 @@ name = "gimli"
 version = "0.31.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07e28edb80900c19c28f1072f2e8aeca7fa06b23cd4169cefe1af5aa3260783f"
+
+[[package]]
+name = "helmet-core"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77e5257ac01ab4aba4c6258f179f813a850f053b18224ca68d62c9d158947c11"
 
 [[package]]
 name = "hex"
@@ -2154,9 +2175,11 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "axum",
+ "axum-helmet",
  "base64",
  "bitcoin",
  "futures-util",
+ "http",
  "ml-dsa",
  "ml-kem",
  "pq_address",
@@ -2168,6 +2191,7 @@ dependencies = [
  "slh-dsa",
  "tokio",
  "tokio-tungstenite",
+ "tower",
  "tower-http",
 ]
 

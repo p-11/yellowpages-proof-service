@@ -1,11 +1,13 @@
 mod websocket;
 
 use axum::{Json, Router, extract::State, extract::ws::close_code, http::Method, routing::get};
+use axum_helmet::{Helmet, HelmetLayer};
 use base64::{Engine, engine::general_purpose};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
 use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_msg_hash};
 use bitcoin::{Address as BitcoinAddress, Network, address::AddressType};
+use http::HeaderValue;
 use ml_dsa::{
     EncodedVerifyingKey as MlDsaEncodedVerifyingKey, MlDsa44, Signature as MlDsaSignature,
     VerifyingKey as MlDsaVerifyingKey, signature::Verifier as MlDsaVerifier,
@@ -20,7 +22,7 @@ use serde_json::json;
 use slh_dsa::{Sha2_128s, Signature as SlhDsaSignature, VerifyingKey as SlhDsaVerifyingKey};
 use std::env;
 use std::str::FromStr;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use websocket::{WsCloseCode, handle_ws_upgrade};
 
 #[derive(Serialize, Deserialize)]
@@ -158,6 +160,61 @@ impl Environment {
             Environment::Development => PqNetwork::Testnet,
         }
     }
+
+    /// Configure CORS for the given environment.
+    ///
+    /// This function sets up the CORS layer with allowed methods and origins based on the environment.
+    ///
+    /// # Returns
+    /// - `Result<CorsLayer, String>`: A result containing the configured CORS layer or an error message.
+    ///
+    /// # Errors
+    ///
+    /// If the CORS configuration fails, an error message is returned.
+    pub fn cors_layer(&self) -> Result<CorsLayer, String> {
+        // Allowed Methods
+        let methods = [Method::GET];
+        // Allowed Origins
+        let origin_cfg = match self {
+            Environment::Development => {
+                let dev_allowed = [
+                    "http://localhost:3000",
+                    "https://yellowpages-development.xyz",
+                    "https://www.yellowpages-development.xyz",
+                ]
+                .map(|s| {
+                    HeaderValue::from_str(s).map_err(|e| format!("Invalid CORS origin `{s}`: {e}"))
+                })
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?;
+                // build a single matcher that first checks exact list,
+                // then falls back to the "yellowpages-client*.vercel.app" rule:
+                AllowOrigin::predicate(move |hv, _| {
+                    let s = hv.to_str().unwrap_or("");
+                    if dev_allowed.iter().any(|u| u.as_bytes() == hv.as_bytes()) {
+                        true
+                    } else {
+                        s.starts_with("https://yellowpages-client") && s.ends_with(".vercel.app")
+                    }
+                })
+            }
+            Environment::Production => {
+                // only these two in prod
+                let prod_allowed = ["https://www.yellowpages.xyz", "https://yellowpages.xyz"]
+                    .map(|s| {
+                        HeaderValue::from_str(s)
+                            .map_err(|e| format!("Invalid CORS origin `{s}`: {e}"))
+                    })
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()?;
+                AllowOrigin::list(prod_allowed)
+            }
+        };
+
+        Ok(CorsLayer::new()
+            .allow_methods(methods)
+            .allow_origin(origin_cfg))
+    }
 }
 
 #[derive(Clone)]
@@ -245,17 +302,22 @@ async fn main() {
         }
     };
 
-    // Configure CORS to allow all origins but restrict headers
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET]);
+    // Configure CORS to allow env specific origins & restrict headers
+    let cors = match config.environment.cors_layer() {
+        Ok(cors) => cors,
+        Err(e) => {
+            eprintln!("Failed to build cors layer: {e}");
+            std::process::exit(1);
+        }
+    };
 
     // build our application with routes and CORS
     let app = Router::new()
         .route("/health", get(health))
         .route("/prove", get(handle_ws_upgrade))
         .with_state(config)
-        .layer(cors);
+        .layer(cors)
+        .layer(HelmetLayer::new(Helmet::default()));
 
     println!("Server running on http://0.0.0.0:8008");
 
@@ -829,8 +891,13 @@ mod tests {
         Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
         aead::{Aead, KeyInit},
     };
+    use axum::{
+        body::Body,
+        {Router, routing::get},
+    };
     use axum::{http::StatusCode, response::IntoResponse, routing::post};
     use futures_util::{SinkExt, StreamExt};
+    use http::{HeaderMap, Request, header};
     use ml_dsa::{KeyGen, signature::Signer};
     use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, SharedKey, kem::Decapsulate};
     use pq_address::{
@@ -843,6 +910,7 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
+    use tower::ServiceExt; // for .oneshot()
     use websocket::AES_GCM_NONCE_LENGTH;
 
     // Add a constant for our mock attestation document
@@ -970,6 +1038,201 @@ mod tests {
 
     const VALID_SLH_DSA_SHA2_128_SIGNATURE_P2WPKH: &str = "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";
 
+    /// Spin up a 1-route app with the CORS layer.
+    fn setup_app(env: &Environment) -> Router {
+        let cors = env.cors_layer().expect("bad CORS config");
+        let helmet = HelmetLayer::new(Helmet::default());
+        Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(cors)
+            .layer(helmet)
+    }
+
+    /// Fire a GET / with the given Origin, return the response headers.
+    async fn send_req(app: &Router, origin: &str) -> HeaderMap {
+        let req = Request::builder()
+            .method("GET")
+            .uri("/")
+            .header(header::ORIGIN, origin)
+            .body(Body::empty())
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap().headers().clone()
+    }
+
+    #[tokio::test]
+    async fn dev_allows_exact_listed_domains() {
+        let app = setup_app(&Environment::Development);
+        for origin in &[
+            "http://localhost:3000",
+            "https://yellowpages-development.xyz",
+            "https://www.yellowpages-development.xyz",
+        ] {
+            let headers = send_req(&app, origin).await;
+            println!("headers: {headers:?}");
+            assert_eq!(
+                headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+                *origin,
+                "Expected dev to allow {origin}",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dev_allows_vercel_preview_predicate() {
+        let app = setup_app(&Environment::Development);
+        // must start with exactly "https://yellowpages-client" and end with ".vercel.app"
+        let origin = "https://yellowpages-client123.vercel.app";
+        let headers = send_req(&app, origin).await;
+        assert_eq!(
+            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+            origin,
+            "Expected dev to allow Vercel preview with yellowpages-client prefix"
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_rejects_non_yellowpages_vercel_preview() {
+        let app = setup_app(&Environment::Development);
+        // wrong prefix for predicate
+        let origin = "https://foo.vercel.app";
+        let headers = send_req(&app, origin).await;
+        assert!(
+            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
+            "Dev should reject Vercel preview without yellowpages-client prefix"
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_rejects_prod_domains() {
+        let app = setup_app(&Environment::Development);
+        for origin in &["https://www.yellowpages.xyz", "https://yellowpages.xyz"] {
+            let headers = send_req(&app, origin).await;
+            assert!(
+                headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
+                "Expected dev to reject prod {origin}",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dev_rejects_evil_domain() {
+        let app = setup_app(&Environment::Development);
+        let headers = send_req(&app, "https://evil.com").await;
+        assert!(
+            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
+            "Dev should reject evil.com"
+        );
+    }
+
+    #[tokio::test]
+    async fn prod_allows_both_www_and_non_www() {
+        let app = setup_app(&Environment::Production);
+        for origin in &["https://www.yellowpages.xyz", "https://yellowpages.xyz"] {
+            let headers = send_req(&app, origin).await;
+            assert_eq!(
+                headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+                *origin,
+                "Expected prod to allow {origin}",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn prod_rejects_dev_domains() {
+        let app = setup_app(&Environment::Production);
+        for origin in &[
+            "http://localhost:3000",
+            "https://yellowpages-development.xyz",
+            "https://www.yellowpages-development.xyz",
+        ] {
+            let headers = send_req(&app, origin).await;
+            assert!(
+                headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
+                "Expected prod to reject dev {origin}",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn prod_rejects_evil_domain() {
+        let app = setup_app(&Environment::Production);
+        let headers = send_req(&app, "https://evil.com").await;
+        assert!(
+            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
+            "Prod should reject evil.com"
+        );
+    }
+
+    #[tokio::test]
+    async fn helmet_sets_default_security_headers() {
+        let app = setup_app(&Environment::Development);
+        let origin = "https://yellowpages-development.xyz";
+        let headers = send_req(&app, origin).await;
+        assert_eq!(
+            headers.get("content-security-policy").unwrap(),
+            "default-src 'self'; base-uri 'self'; font-src 'self' https: data:; \
+             form-action 'self'; frame-ancestors 'self'; img-src 'self' data:; \
+             object-src 'none'; script-src 'self'; script-src-attr 'none'; \
+             style-src 'self' https: 'unsafe-inline'; upgrade-insecure-requests",
+            "CSP must lock down all sources"
+        );
+        assert_eq!(
+            headers.get("cross-origin-opener-policy").unwrap(),
+            "same-origin",
+            "COOP must be same-origin"
+        );
+        assert_eq!(
+            headers.get("cross-origin-resource-policy").unwrap(),
+            "same-origin",
+            "CORP must be same-origin"
+        );
+        assert_eq!(
+            headers.get("origin-agent-cluster").unwrap(),
+            "?1",
+            "Origin-Agent-Cluster must be ?1"
+        );
+        assert_eq!(
+            headers.get("referrer-policy").unwrap(),
+            "no-referrer",
+            "Referrer-Policy must be no-referrer"
+        );
+        assert_eq!(
+            headers.get("strict-transport-security").unwrap(),
+            "max-age=15552000; includeSubDomains",
+            "HSTS must be 180 days with subdomains"
+        );
+        assert_eq!(
+            headers.get("x-content-type-options").unwrap(),
+            "nosniff",
+            "X-Content-Type-Options must be nosniff"
+        );
+        assert_eq!(
+            headers.get("x-dns-prefetch-control").unwrap(),
+            "off",
+            "X-DNS-Prefetch-Control must be off"
+        );
+        assert_eq!(
+            headers.get("x-download-options").unwrap(),
+            "noopen",
+            "X-Download-Options must be noopen"
+        );
+        assert_eq!(
+            headers.get("x-frame-options").unwrap(),
+            "SAMEORIGIN",
+            "X-Frame-Options must be sameorigin"
+        );
+        assert_eq!(
+            headers.get("x-permitted-cross-domain-policies").unwrap(),
+            "none",
+            "X-Permitted-Cross-Domain-Policies must be none"
+        );
+        assert_eq!(
+            headers.get("x-xss-protection").unwrap(),
+            "0",
+            "X-XSS-Protection must be 0"
+        );
+    }
+
     #[test]
     fn test_validate_inputs_valid_data() {
         let config = Config {
@@ -1081,6 +1344,7 @@ mod tests {
             "Expected a POLICY error for a network mismatch, got {err}",
         );
     }
+
     #[test]
     fn test_validate_inputs_empty_address() {
         let proof_request = ProofRequest {
