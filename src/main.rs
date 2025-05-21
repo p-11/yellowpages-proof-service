@@ -1876,7 +1876,7 @@ mod tests {
             slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
         };
 
-        // Encode using our new method
+        // Encode to base64
         let user_data_base64 = user_data.encode().unwrap();
 
         // Verify we can decode it back
@@ -1890,6 +1890,30 @@ mod tests {
         assert_eq!(
             decoded_data.slh_dsa_sha2_s_128_address,
             VALID_SLH_DSA_SHA2_128_ADDRESS
+        );
+    }
+
+    #[test]
+    fn test_user_data_encoding_length() {
+        // Max encoded user data size is 1KB
+        // https://github.com/aws/aws-nitro-enclaves-nsm-api/blob/main/docs/attestation_process.md#22-attestation-document-specification
+        const MAX_ENCODED_USER_DATA: usize = 1024;
+        // Create and encode user data
+        let user_data = UserData {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+        };
+
+        // Encode to base64
+        let user_data_base64 = user_data.encode().unwrap();
+
+        // Assert it never exceeds 1 KB
+        assert!(
+            user_data_base64.len() <= MAX_ENCODED_USER_DATA,
+            "Encoded user_data is {} bytes; must be ≤ {} bytes",
+            user_data_base64.len(),
+            MAX_ENCODED_USER_DATA
         );
     }
 
