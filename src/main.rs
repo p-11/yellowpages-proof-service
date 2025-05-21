@@ -1,13 +1,20 @@
 mod websocket;
 
-use axum::{Json, Router, extract::State, extract::ws::close_code, http::Method, routing::get};
+use axum::{
+    Json, Router,
+    extract::State,
+    extract::ws::close_code,
+    http::{HeaderValue, Method},
+    routing::get,
+};
 use axum_helmet::{Helmet, HelmetLayer};
 use base64::{Engine, engine::general_purpose};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
 use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_msg_hash};
 use bitcoin::{Address as BitcoinAddress, Network, address::AddressType};
-use http::HeaderValue;
+use env_logger::Env;
+use log::LevelFilter;
 use ml_dsa::{
     EncodedVerifyingKey as MlDsaEncodedVerifyingKey, MlDsa44, Signature as MlDsaSignature,
     VerifyingKey as MlDsaVerifyingKey, signature::Verifier as MlDsaVerifier,
@@ -88,7 +95,7 @@ macro_rules! ok_or_bad_request {
         match $expr {
             Ok(val) => val,
             Err(e) => {
-                eprintln!("{}: {}", $err_msg, e);
+                log::error!("{}: {}", $err_msg, e);
                 return Err(close_code::POLICY);
             }
         }
@@ -99,11 +106,11 @@ macro_rules! ok_or_bad_request {
 #[macro_export]
 macro_rules! bad_request {
     ($err_msg:expr) => {{
-        eprintln!($err_msg);
+        log::error!($err_msg);
         return Err(close_code::POLICY);
     }};
     ($fmt:expr, $($arg:tt)*) => {{
-        eprintln!($fmt, $($arg)*);
+        log::error!($fmt, $($arg)*);
         return Err(close_code::POLICY);
     }};
 }
@@ -112,11 +119,11 @@ macro_rules! bad_request {
 #[macro_export]
 macro_rules! internal_error {
     ($err_msg:expr) => {{
-        eprintln!($err_msg);
+        log::error!($err_msg);
         return Err(close_code::ERROR);
     }};
     ($fmt:expr, $($arg:tt)*) => {{
-        eprintln!($fmt, $($arg)*);
+        log::error!($fmt, $($arg)*);
         return Err(close_code::ERROR);
     }};
 }
@@ -128,7 +135,7 @@ macro_rules! ok_or_internal_error {
         match $expr {
             Ok(val) => val,
             Err(e) => {
-                eprintln!("{}: {}", $err_msg, e);
+                log::error!("{}: {}", $err_msg, e);
                 return Err(close_code::ERROR);
             }
         }
@@ -171,7 +178,7 @@ impl Environment {
     /// # Errors
     ///
     /// If the CORS configuration fails, an error message is returned.
-    pub fn cors_layer(&self) -> Result<CorsLayer, String> {
+    fn cors_layer(&self) -> Result<CorsLayer, String> {
         // Allowed Methods
         let methods = [Method::GET];
         // Allowed Origins
@@ -214,6 +221,23 @@ impl Environment {
         Ok(CorsLayer::new()
             .allow_methods(methods)
             .allow_origin(origin_cfg))
+    }
+
+    /// Set up logging based on the environment.
+    ///
+    /// This function initializes the logger with different log levels based on the environment.
+    fn setup_logging(&self) {
+        let mut builder = match self {
+            Environment::Production => {
+                let mut b = env_logger::Builder::new();
+                b.filter_level(LevelFilter::Off);
+                b
+            }
+            Environment::Development => {
+                env_logger::Builder::from_env(Env::default().default_filter_or("debug"))
+            }
+        };
+        builder.init();
     }
 }
 
@@ -297,16 +321,20 @@ async fn main() {
     let config = match Config::from_env() {
         Ok(config) => config,
         Err(e) => {
-            eprintln!("Failed to load config: {e}");
+            log::error!("Failed to load config: {e}");
             std::process::exit(1);
         }
     };
+
+    // Set up logging based on the environment
+    // This should be done right after loading the config and before any logging occurs
+    config.environment.setup_logging();
 
     // Configure CORS to allow env specific origins & restrict headers
     let cors = match config.environment.cors_layer() {
         Ok(cors) => cors,
         Err(e) => {
-            eprintln!("Failed to build cors layer: {e}");
+            log::error!("Failed to build cors layer: {e}");
             std::process::exit(1);
         }
     };
@@ -319,19 +347,19 @@ async fn main() {
         .layer(cors)
         .layer(HelmetLayer::new(Helmet::default()));
 
-    println!("Server running on http://0.0.0.0:8008");
+    log::info!("Server running on http://0.0.0.0:8008");
 
     // run our app with hyper, listening globally on port 8008
     let listener = match tokio::net::TcpListener::bind("0.0.0.0:8008").await {
         Ok(listener) => listener,
         Err(e) => {
-            eprintln!("Failed to bind to port 8008: {e}");
+            log::error!("Failed to bind to port 8008: {e}");
             std::process::exit(1);
         }
     };
 
     if let Err(e) = axum::serve(listener, app).await {
-        eprintln!("Error starting server: {e}");
+        log::error!("Error starting server: {e}");
         std::process::exit(1);
     }
 }
@@ -352,7 +380,7 @@ async fn health(State(config): State<Config>) -> Json<serde_json::Value> {
 
 async fn prove(config: Config, proof_request: ProofRequest) -> WsCloseCode {
     // Log the received data
-    println!(
+    log::info!(
         "Received proof request - Bitcoin Address: {}, ML-DSA 44 Address: {}, SLH-DSA SHA2-S-128 Address: {}",
         proof_request.bitcoin_address,
         proof_request.ml_dsa_44_address,
@@ -436,7 +464,7 @@ async fn prove(config: Config, proof_request: ProofRequest) -> WsCloseCode {
     }
 
     // Success path
-    println!("All verifications completed successfully");
+    log::info!("All verifications completed successfully");
     close_code::NORMAL
 }
 
@@ -518,7 +546,7 @@ fn validate_bitcoin_inputs(proof_request: &ProofRequest) -> Result<BitcoinAddres
     // Validate the address type is either P2PKH or P2WPKH
     match bitcoin_address.address_type() {
         Some(AddressType::P2pkh | AddressType::P2wpkh) => {
-            println!("Valid address type: {:?}", bitcoin_address.address_type());
+            log::info!("Valid address type: {:?}", bitcoin_address.address_type());
         }
         other_type => {
             bad_request!(
@@ -528,7 +556,7 @@ fn validate_bitcoin_inputs(proof_request: &ProofRequest) -> Result<BitcoinAddres
         }
     }
 
-    println!("Successfully parsed Bitcoin address: {bitcoin_address}");
+    log::info!("Successfully parsed Bitcoin address: {bitcoin_address}");
 
     // Return the parsed Bitcoin address
     Ok(bitcoin_address)
@@ -599,7 +627,7 @@ fn validate_inputs(proof_request: &ProofRequest, config: &Config) -> ValidationR
         "Failed to parse ML-DSA 44 signature"
     );
 
-    println!("Successfully parsed ML-DSA 44 inputs");
+    log::info!("Successfully parsed ML-DSA 44 inputs");
 
     // Decode the SLH-DSA SHA2-S-128 address as a DecodedPqAddress
     let slh_dsa_sha2_s_128_address = ok_or_bad_request!(
@@ -647,7 +675,7 @@ fn validate_inputs(proof_request: &ProofRequest, config: &Config) -> ValidationR
         "Failed to parse SLH-DSA SHA2-S-128 signature"
     );
 
-    println!("Successfully parsed SLH-DSA SHA2-S-128 inputs");
+    log::info!("Successfully parsed SLH-DSA SHA2-S-128 inputs");
 
     Ok(ValidatedInputs {
         bitcoin_address,
@@ -687,7 +715,7 @@ fn verify_bitcoin_ownership(
         "Failed to recover public key"
     );
 
-    println!("Recovered public key: {recovered_public_key}");
+    log::info!("Recovered public key: {recovered_public_key}");
 
     // Step 3: Double-check signature validity
     // Convert the recoverable signature to a standard signature
@@ -705,14 +733,14 @@ fn verify_bitcoin_ownership(
         "Failed to verify signature"
     );
 
-    println!("Signature is valid. Message successfully verified.");
+    log::info!("Signature is valid. Message successfully verified.");
 
     // Step 4: Verify that the recovered public key matches the address
     match address.address_type() {
         Some(AddressType::P2pkh | AddressType::P2wpkh) => {
             // Check if the address is related to the recovered public key
             if address.is_related_to_pubkey(&recovered_public_key) {
-                println!("Address ownership verified: recovered public key matches the address");
+                log::info!("Address ownership verified: recovered public key matches the address");
             } else {
                 bad_request!(
                     "Address ownership verification failed: public key does not match the address"
@@ -727,7 +755,7 @@ fn verify_bitcoin_ownership(
         }
     }
 
-    println!("Successfully verified Bitcoin ownership for {address}");
+    log::info!("Successfully verified Bitcoin ownership for {address}");
     Ok(())
 }
 
@@ -743,7 +771,7 @@ fn verify_ml_dsa_44_ownership(
         "Failed to verify ML-DSA 44 signature"
     );
 
-    println!("ML-DSA 44 signature verified successfully");
+    log::info!("ML-DSA 44 signature verified successfully");
 
     // Verify that the public key matches the address
     // The address should be the SHA256 hash of the encoded public key
@@ -751,7 +779,7 @@ fn verify_ml_dsa_44_ownership(
     let computed_address = sha256::Hash::hash(&encoded_key[..]).to_byte_array();
 
     if computed_address == address.pubkey_hash_bytes() {
-        println!("ML-DSA 44 address ownership verified: public key hash matches the address");
+        log::info!("ML-DSA 44 address ownership verified: public key hash matches the address");
     } else {
         bad_request!(
             "ML-DSA 44 address verification failed: public key hash does not match the address"
@@ -773,7 +801,7 @@ fn verify_slh_dsa_sha2_s_128_ownership(
         "Failed to verify SLH-DSA SHA2-S-128 signature"
     );
 
-    println!("SLH-DSA SHA2-S-128 signature verified successfully");
+    log::info!("SLH-DSA SHA2-S-128 signature verified successfully");
 
     // Verify that the public key matches the address
     // The address should be the SHA256 hash of the encoded public key
@@ -781,7 +809,7 @@ fn verify_slh_dsa_sha2_s_128_ownership(
     let computed_address = sha256::Hash::hash(&encoded_key[..]).to_byte_array();
 
     if computed_address == address.pubkey_hash_bytes() {
-        println!(
+        log::info!(
             "SLH-DSA SHA2-S-128 address ownership verified: public key hash matches the address"
         );
     } else {
@@ -895,9 +923,13 @@ mod tests {
         body::Body,
         {Router, routing::get},
     };
-    use axum::{http::StatusCode, response::IntoResponse, routing::post};
+    use axum::{
+        http::StatusCode,
+        http::{HeaderMap, Request, header},
+        response::IntoResponse,
+        routing::post,
+    };
     use futures_util::{SinkExt, StreamExt};
-    use http::{HeaderMap, Request, header};
     use ml_dsa::{KeyGen, signature::Signer};
     use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, SharedKey, kem::Decapsulate};
     use pq_address::{
@@ -2146,7 +2178,7 @@ mod tests {
             Ok(shared_secret)
         } else {
             // Unexpected response - this should never happen in tests
-            println!("Unexpected response type");
+            log::info!("Unexpected response type");
             Err(close_code::ERROR)
         }
     }

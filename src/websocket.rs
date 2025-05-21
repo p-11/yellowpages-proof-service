@@ -51,9 +51,10 @@ macro_rules! with_timeout {
             Ok(result) => result,
             Err(_) => {
                 // Timeout occurred - protocol violation
-                eprintln!(
+                log::error!(
                     "{} timed out after {} seconds",
-                    $timeout_name, $timeout_secs
+                    $timeout_name,
+                    $timeout_secs
                 );
                 return Err(TIMEOUT_CLOSE_CODE);
             }
@@ -78,12 +79,12 @@ pub async fn handle_ws_upgrade(
     State(config): State<Config>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    println!("Received WebSocket upgrade request");
+    log::info!("Received WebSocket upgrade request");
     ws.on_upgrade(move |socket| handle_ws_protocol(socket, config))
 }
 
 async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
-    println!("WebSocket connection established");
+    log::info!("WebSocket connection established");
 
     // Step 1: Perform handshake and get the shared secret
     let shared_secret = match perform_handshake(&mut socket).await {
@@ -174,7 +175,7 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
         "Failed to convert encapsulation key bytes to encoded type"
     );
 
-    println!("Received valid handshake message");
+    log::info!("Received valid handshake message");
 
     // Create the encapsulation key from the array
     let encapsulation_key =
@@ -185,7 +186,7 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
     let Ok((ciphertext, shared_secret)): Result<(Ciphertext<MlKem768>, SharedKey<MlKem768>), _> =
         encapsulation_key.encapsulate(&mut rng)
     else {
-        eprintln!("Failed to encapsulate shared secret");
+        log::error!("Failed to encapsulate shared secret");
         return Err(close_code::ERROR);
     };
 
@@ -207,7 +208,7 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
         "Failed to send handshake response"
     );
 
-    println!("Handshake successfully completed");
+    log::info!("Handshake successfully completed");
 
     // Return the shared secret directly
     Ok(shared_secret)
@@ -286,7 +287,7 @@ async fn send_close_frame(socket: &mut WebSocket, code: WsCloseCode) {
     // Per WebSocket protocol, we only send a close frame once.
     // If it fails, we just log the error and continue - there's nothing else we can do.
     if let Err(error) = socket.send(WsMessage::Close(Some(close_frame))).await {
-        eprintln!("Failed to send close frame (code: {code}): {error}");
+        log::error!("Failed to send close frame (code: {code}): {error}");
     }
-    println!("WebSocket connection terminated with code: {code}");
+    log::info!("WebSocket connection terminated with code: {code}");
 }
