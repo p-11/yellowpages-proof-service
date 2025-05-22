@@ -696,11 +696,13 @@ fn generate_expected_message(
     slh_dsa_sha2_s_128_address: &DecodedPqAddress,
 ) -> String {
     format!(
-        "yellowpages.xyz\n\n\
-        I want to permanently link my Bitcoin address with the following post-quantum addresses:\n\n\
-        Bitcoin address: {bitcoin_address}\n\
-        ML-DSA-44 address: {ml_dsa_44_address}\n\
-        SLH-DSA-SHA2-128s address: {slh_dsa_sha2_s_128_address}",
+        r"yellowpages.xyz
+
+I want to permanently link my Bitcoin address with the following post-quantum addresses:
+
+Bitcoin address: {bitcoin_address}
+ML-DSA-44 address: {ml_dsa_44_address}
+SLH-DSA-SHA2-128s address: {slh_dsa_sha2_s_128_address}"
     )
 }
 
@@ -2591,11 +2593,14 @@ mod tests {
         let slh_dsa_sha2_s_128_address = decode_pq_address(VALID_SLH_DSA_SHA2_128_ADDRESS).unwrap();
 
         // expected message
-        let expected_message = "yellowpages.xyz\n\n\
-         I want to permanently link my Bitcoin address with the following post-quantum addresses:\n\n\
-         Bitcoin address: 1JQcr9RQ1Y24Lmnuyjc6Lxbci6E7PpkoQv\n\
-         ML-DSA-44 address: rh1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hsmmfzpd\n\
-         SLH-DSA-SHA2-128s address: rh1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5s5m48q0";
+        let expected_message = r"yellowpages.xyz
+
+I want to permanently link my Bitcoin address with the following post-quantum addresses:
+
+Bitcoin address: 1JQcr9RQ1Y24Lmnuyjc6Lxbci6E7PpkoQv
+ML-DSA-44 address: rh1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hsmmfzpd
+SLH-DSA-SHA2-128s address: rh1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5s5m48q0";
+
         // Call the function
         let result = generate_expected_message(
             &bitcoin_address,
