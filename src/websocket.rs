@@ -353,3 +353,47 @@ async fn send_close_frame(socket: &mut WebSocket, code: WsCloseCode) {
     }
     log::info!("WebSocket connection terminated with code: {code}");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_validate_turnstile_development_dummy_token() {
+        let config = Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: "1.1.0".to_string(),
+            environment: Environment::Development,
+            cf_turnstile_secret_key: "some_key".to_string(),
+        };
+
+        let result = validate_cloudflare_turnstile_token("XXXX.DUMMY.TOKEN.XXXX", &config).await;
+        assert!(
+            result.is_ok(),
+            "Validation should pass in development with dummy token"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_turnstile_production_dummy_token() {
+        let config = Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: "1.1.0".to_string(),
+            environment: Environment::Production,
+            cf_turnstile_secret_key: "some_key".to_string(),
+        };
+
+        let result = validate_cloudflare_turnstile_token("XXXX.DUMMY.TOKEN.XXXX", &config).await;
+        assert!(
+            result.is_err(),
+            "Validation should fail in production with dummy token"
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            TURNSTILE_VALIDATION_FAILED_CODE,
+            "Should fail with TURNSTILE_VALIDATION_FAILED_CODE"
+        );
+    }
+}
