@@ -2157,8 +2157,10 @@ mod tests {
         // Base64 encode the encapsulation key
         let encap_key_base64 = general_purpose::STANDARD.encode(encapsulation_key.as_bytes());
 
-        // Send handshake message with ML-KEM encapsulation key
-        let handshake_json = format!(r#"{{"ml_kem_768_encapsulation_key":"{encap_key_base64}"}}"#);
+        // Send handshake message with ML-KEM encapsulation key and dummy Turnstile token
+        let handshake_json = format!(
+            r#"{{"ml_kem_768_encapsulation_key":"{encap_key_base64}","cf_turnstile_token":"XXXX.DUMMY.TOKEN.XXXX"}}"#
+        );
         ws_stream
             .send(TungsteniteMessage::Text(handshake_json.into()))
             .await
