@@ -33,6 +33,7 @@ const PROOF_REQUEST_TIMEOUT_SECS: u64 = 30; // 30 seconds for proof submission
 
 // Custom close code in the private range 4000-4999
 const TIMEOUT_CLOSE_CODE: u16 = 4000; // Custom code for timeout errors
+const TURNSTILE_VALIDATION_FAILED_CODE: u16 = 4001; // Custom code for Turnstile validation failure
 
 // Constants for AES-GCM
 pub const AES_GCM_NONCE_LENGTH: usize = 12; // length in bytes
@@ -40,6 +41,11 @@ pub const AES_GCM_NONCE_LENGTH: usize = 12; // length in bytes
 // This includes the nonce (12 bytes), the AES-GCM tag (16 bytes), and the encrypted data
 const MAX_ENCRYPTED_PROOF_REQUEST_LENGTH: usize = 16500;
 const AES_256_KEY_LENGTH: usize = 32; // length in bytes
+
+// Cloudflare Turnstile constants
+const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+// Test secret key that always passes
+const TURNSTILE_TEST_SECRET_KEY: &str = "1x0000000000000000000000000000000AA";
 
 /// Type alias for WebSocket close codes
 pub type WsCloseCode = u16;
@@ -66,12 +72,49 @@ macro_rules! with_timeout {
 #[derive(Serialize, Deserialize)]
 pub struct HandshakeMessage {
     pub ml_kem_768_encapsulation_key: String, // Base64-encoded ML-KEM encapsulation key from client
+    pub cf_turnstile_token: String,           // Cloudflare Turnstile token
 }
 
 /// Response sent by server to acknowledge handshake
 #[derive(Serialize, Deserialize)]
 pub struct HandshakeResponse {
     pub ml_kem_768_ciphertext: String, // Base64-encoded ML-KEM ciphertext
+}
+
+/// Response from Cloudflare Turnstile verification
+#[derive(Deserialize)]
+struct TurnstileResponse {
+    success: bool,
+    #[serde(rename = "error-codes")]
+    error_codes: Vec<String>,
+}
+
+/// Validates a Cloudflare Turnstile token
+async fn validate_cloudflare_turnstile_token(token: &str) -> Result<(), WsCloseCode> {
+    let client = reqwest::Client::new();
+
+    let form = [("secret", TURNSTILE_TEST_SECRET_KEY), ("response", token)];
+
+    let response = ok_or_internal_error!(
+        client.post(TURNSTILE_VERIFY_URL).form(&form).send().await,
+        "Failed to send Turnstile verification request"
+    );
+
+    let turnstile_response = ok_or_internal_error!(
+        response.json::<TurnstileResponse>().await,
+        "Failed to parse Turnstile response"
+    );
+
+    if !turnstile_response.success {
+        log::error!(
+            "Turnstile validation failed with error codes: {:?}",
+            turnstile_response.error_codes
+        );
+        return Err(TURNSTILE_VALIDATION_FAILED_CODE);
+    }
+
+    log::info!("Turnstile token validation successful");
+    Ok(())
 }
 
 /// WebSocket handler that implements a stateful handshake followed by proof verification
@@ -142,6 +185,10 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
         serde_json::from_str(&handshake_text),
         "Failed to parse handshake message JSON"
     );
+
+    // Validate Cloudflare Turnstile token
+
+    validate_cloudflare_turnstile_token(&handshake_request.cf_turnstile_token).await?;
 
     // Check the length of the base64 string before decoding
     if handshake_request.ml_kem_768_encapsulation_key.len()
