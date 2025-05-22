@@ -955,7 +955,7 @@ mod tests {
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
     use tower::ServiceExt; // for .oneshot()
-    use websocket::AES_GCM_NONCE_LENGTH;
+    use websocket::{AES_GCM_NONCE_LENGTH, TURNSTILE_VALIDATION_FAILED_CODE};
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
@@ -2409,6 +2409,46 @@ mod tests {
                     u16::from(close_frame.code),
                     close_code::POLICY,
                     "Should close with POLICY code on invalid public key"
+                );
+            }
+            _ => panic!("Expected close frame, got something else"),
+        }
+    }
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_invalid_handshake_turnstile_token() {
+        // Set up the test servers
+        let mut ws_stream = set_up_end_to_end_test_servers(
+            VALID_BITCOIN_ADDRESS_P2PKH,
+            VALID_ML_DSA_44_ADDRESS,
+            VALID_SLH_DSA_SHA2_128_ADDRESS,
+        )
+        .await;
+
+
+        let mut rng = StdRng::from_entropy();
+        let (_, encapsulation_key) = MlKem768::generate(&mut rng);
+
+        // Base64 encode the encapsulation key
+        let encap_key_base64 = general_purpose::STANDARD.encode(encapsulation_key.as_bytes());
+
+        // Send incorrect handshake message with invalid public key
+        let handshake_json = format!(
+            r#"{{"ml_kem_768_encapsulation_key":"{encap_key_base64}","cf_turnstile_token":"invalid"}}"#
+        );
+        ws_stream
+            .send(TungsteniteMessage::Text(handshake_json.into()))
+            .await
+            .unwrap();
+
+        // Expect close frame with POLICY code
+        let response = ws_stream.next().await.unwrap().unwrap();
+        match response {
+            TungsteniteMessage::Close(Some(close_frame)) => {
+                assert_eq!(
+                    u16::from(close_frame.code),
+                    TURNSTILE_VALIDATION_FAILED_CODE,
+                    "Should close with TURNSTILE_VALIDATION_FAILED_CODE code on invalid turnstile token"
                 );
             }
             _ => panic!("Expected close frame, got something else"),

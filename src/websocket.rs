@@ -33,7 +33,7 @@ const PROOF_REQUEST_TIMEOUT_SECS: u64 = 30; // 30 seconds for proof submission
 
 // Custom close code in the private range 4000-4999
 const TIMEOUT_CLOSE_CODE: u16 = 4000; // Custom code for timeout errors
-const TURNSTILE_VALIDATION_FAILED_CODE: u16 = 4001; // Custom code for Turnstile validation failure
+pub const TURNSTILE_VALIDATION_FAILED_CODE: u16 = 4001; // Custom code for Turnstile validation failure
 
 // Constants for AES-GCM
 pub const AES_GCM_NONCE_LENGTH: usize = 12; // length in bytes
