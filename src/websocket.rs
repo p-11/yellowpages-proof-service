@@ -1,6 +1,6 @@
 use crate::{
-    Config, ProofRequest, bad_request, internal_error, ok_or_bad_request, ok_or_internal_error,
-    prove,
+    Config, Environment, ProofRequest, bad_request, internal_error, ok_or_bad_request,
+    ok_or_internal_error, prove,
 };
 use aes_gcm::{
     Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
@@ -94,12 +94,18 @@ async fn validate_cloudflare_turnstile_token(
     token: &str,
     config: &Config,
 ) -> Result<(), WsCloseCode> {
+    // In development mode, allow test token with test secret key
+    let secret_key = if matches!(config.environment, Environment::Development)
+        && token == "XXXX.DUMMY.TOKEN.XXXX"
+    {
+        TURNSTILE_TEST_SECRET_KEY.to_string()
+    } else {
+        config.cf_turnstile_secret_key.to_string()
+    };
+
     let client = reqwest::Client::new();
 
-    let form = [
-        ("secret", config.cf_turnstile_secret_key.to_string()),
-        ("response", token.to_string()),
-    ];
+    let form = [("secret", secret_key), ("response", token.to_string())];
 
     let response = ok_or_internal_error!(
         client.post(TURNSTILE_VERIFY_URL).form(&form).send().await,
