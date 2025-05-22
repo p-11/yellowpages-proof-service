@@ -45,7 +45,7 @@ const AES_256_KEY_LENGTH: usize = 32; // length in bytes
 // Cloudflare Turnstile constants
 const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 // Test secret key that always passes
-const TURNSTILE_TEST_SECRET_KEY: &str = "1x0000000000000000000000000000000AA";
+const TURNSTILE_TEST_SECRET_KEY_ALWAYS_PASSES: &str = "1x0000000000000000000000000000000AA";
 
 /// Type alias for WebSocket close codes
 pub type WsCloseCode = u16;
@@ -98,7 +98,7 @@ async fn validate_cloudflare_turnstile_token(
     let secret_key = if matches!(config.environment, Environment::Development)
         && token == "XXXX.DUMMY.TOKEN.XXXX"
     {
-        TURNSTILE_TEST_SECRET_KEY.to_string()
+        TURNSTILE_TEST_SECRET_KEY_ALWAYS_PASSES.to_string()
     } else {
         config.cf_turnstile_secret_key.to_string()
     };
@@ -355,8 +355,9 @@ async fn send_close_frame(socket: &mut WebSocket, code: WsCloseCode) {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
+    pub const TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS: &str = "2x00000000000000000000BB";
 
     #[tokio::test]
     async fn test_validate_turnstile_development_dummy_token() {
@@ -365,7 +366,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Development,
-            cf_turnstile_secret_key: "some_key".to_string(),
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
 
         let result = validate_cloudflare_turnstile_token("XXXX.DUMMY.TOKEN.XXXX", &config).await;
@@ -382,7 +383,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Production,
-            cf_turnstile_secret_key: "some_key".to_string(),
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
 
         let result = validate_cloudflare_turnstile_token("XXXX.DUMMY.TOKEN.XXXX", &config).await;
@@ -404,7 +405,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Production,
-            cf_turnstile_secret_key: "some_key".to_string(),
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
 
         let result = validate_cloudflare_turnstile_token("invalid.token.here", &config).await;

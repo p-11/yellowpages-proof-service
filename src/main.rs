@@ -955,7 +955,10 @@ mod tests {
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
     use tower::ServiceExt; // for .oneshot()
-    use websocket::{AES_GCM_NONCE_LENGTH, TURNSTILE_VALIDATION_FAILED_CODE};
+    use websocket::{
+        AES_GCM_NONCE_LENGTH, TURNSTILE_VALIDATION_FAILED_CODE,
+        tests::TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS,
+    };
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
@@ -966,7 +969,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Development,
-            cf_turnstile_secret_key: "1x0000000000000000000000000000000AA".to_string(),
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         }
     }
 
@@ -1284,7 +1287,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Development,
-            cf_turnstile_secret_key: "mock_secret_key".to_string(),
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
@@ -1317,7 +1320,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Development,
-            cf_turnstile_secret_key: "mock_secret_key".to_string(),
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
@@ -1356,7 +1359,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Production,
-            cf_turnstile_secret_key: "mock_secret_key".to_string(),
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
@@ -2034,7 +2037,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: TEST_VERSION.to_string(),
             environment: Environment::Development,
-            cf_turnstile_secret_key: "mock_secret_key".to_string(),
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         }))
         .await;
         assert_eq!(body["status"], "ok");
@@ -2117,7 +2120,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: TEST_VERSION.to_string(),
             environment: Environment::Development,
-            cf_turnstile_secret_key: "mock_secret_key".to_string(),
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
 
         // Start a WebSocket server with the main WebSocket handler
@@ -2424,7 +2427,6 @@ mod tests {
             VALID_SLH_DSA_SHA2_128_ADDRESS,
         )
         .await;
-
 
         let mut rng = StdRng::from_entropy();
         let (_, encapsulation_key) = MlKem768::generate(&mut rng);
