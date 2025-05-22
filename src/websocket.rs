@@ -90,10 +90,16 @@ struct TurnstileResponse {
 }
 
 /// Validates a Cloudflare Turnstile token
-async fn validate_cloudflare_turnstile_token(token: &str) -> Result<(), WsCloseCode> {
+async fn validate_cloudflare_turnstile_token(
+    token: &str,
+    config: &Config,
+) -> Result<(), WsCloseCode> {
     let client = reqwest::Client::new();
 
-    let form = [("secret", TURNSTILE_TEST_SECRET_KEY), ("response", token)];
+    let form = [
+        ("secret", config.cf_turnstile_secret_key.to_string()),
+        ("response", token.to_string()),
+    ];
 
     let response = ok_or_internal_error!(
         client.post(TURNSTILE_VERIFY_URL).form(&form).send().await,
@@ -130,7 +136,7 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
     log::info!("WebSocket connection established");
 
     // Step 1: Perform handshake and get the shared secret
-    let shared_secret = match perform_handshake(&mut socket).await {
+    let shared_secret = match perform_handshake(&mut socket, &config).await {
         Ok(secret) => secret,
         Err(error_code) => {
             send_close_frame(&mut socket, error_code).await;
@@ -163,10 +169,14 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
 /// This function:
 /// 1. Receives an encapsulation key from the client
 /// 2. Validates the key format and size
-/// 3. Generates a shared secret and ciphertext using ML-KEM-768
-/// 4. Sends the ciphertext back to the client
-/// 5. Returns the shared secret for potential future use
-async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>, WsCloseCode> {
+/// 3. Validates the Cloudflare Turnstile token
+/// 4. Generates a shared secret and ciphertext using ML-KEM-768
+/// 5. Sends the ciphertext back to the client
+/// 6. Returns the shared secret for potential future use
+async fn perform_handshake(
+    socket: &mut WebSocket,
+    config: &Config,
+) -> Result<SharedKey<MlKem768>, WsCloseCode> {
     // Wait for message with a timeout
     let receive_result = with_timeout!(HANDSHAKE_TIMEOUT_SECS, socket.recv(), "Handshake message");
 
@@ -187,8 +197,7 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
     );
 
     // Validate Cloudflare Turnstile token
-
-    validate_cloudflare_turnstile_token(&handshake_request.cf_turnstile_token).await?;
+    validate_cloudflare_turnstile_token(&handshake_request.cf_turnstile_token, &config).await?;
 
     // Check the length of the base64 string before decoding
     if handshake_request.ml_kem_768_encapsulation_key.len()

@@ -247,6 +247,7 @@ struct Config {
     data_layer_api_key: String,
     version: String,
     environment: Environment,
+    cf_turnstile_secret_key: String,
 }
 
 impl Config {
@@ -306,11 +307,15 @@ impl Config {
             .parse::<Environment>()
             .map_err(|e| format!("Invalid ENVIRONMENT: {e}"))?;
 
+        let cf_turnstile_secret_key = env::var("CF_TURNSTILE_SECRET_KEY")
+            .map_err(|_| "CF_TURNSTILE_SECRET_KEY environment variable not set")?;
+
         Ok(Config {
             data_layer_url,
             data_layer_api_key,
             version,
             environment,
+            cf_turnstile_secret_key,
         })
     }
 }
@@ -961,6 +966,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Development,
+            cf_turnstile_secret_key: "1x0000000000000000000000000000000AA".to_string(),
         }
     }
 
@@ -1278,6 +1284,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Development,
+            cf_turnstile_secret_key: "mock_secret_key".to_string(),
         };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
@@ -1310,6 +1317,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Development,
+            cf_turnstile_secret_key: "mock_secret_key".to_string(),
         };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
@@ -1348,6 +1356,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Production,
+            cf_turnstile_secret_key: "mock_secret_key".to_string(),
         };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
@@ -2025,6 +2034,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: TEST_VERSION.to_string(),
             environment: Environment::Development,
+            cf_turnstile_secret_key: "mock_secret_key".to_string(),
         }))
         .await;
         assert_eq!(body["status"], "ok");
@@ -2107,6 +2117,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: TEST_VERSION.to_string(),
             environment: Environment::Development,
+            cf_turnstile_secret_key: "mock_secret_key".to_string(),
         };
 
         // Start a WebSocket server with the main WebSocket handler
