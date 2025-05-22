@@ -1,17 +1,26 @@
 mod websocket;
 
-use axum::{Json, Router, extract::State, extract::ws::close_code, http::Method, routing::get};
+use axum::{
+    Json, Router,
+    extract::State,
+    extract::ws::close_code,
+    http::{HeaderValue, Method},
+    routing::get,
+};
+use axum_helmet::{Helmet, HelmetLayer};
 use base64::{Engine, engine::general_purpose};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
 use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_msg_hash};
 use bitcoin::{Address as BitcoinAddress, Network, address::AddressType};
+use env_logger::Env;
+use log::LevelFilter;
 use ml_dsa::{
     EncodedVerifyingKey as MlDsaEncodedVerifyingKey, MlDsa44, Signature as MlDsaSignature,
     VerifyingKey as MlDsaVerifyingKey, signature::Verifier as MlDsaVerifier,
 };
 use pq_address::{
-    DecodedAddress as DecodedPqAddress, PubKeyType as PqPubKeyType,
+    DecodedAddress as DecodedPqAddress, Network as PqNetwork, PubKeyType as PqPubKeyType,
     decode_address as decode_pq_address,
 };
 use reqwest::Client;
@@ -20,7 +29,7 @@ use serde_json::json;
 use slh_dsa::{Sha2_128s, Signature as SlhDsaSignature, VerifyingKey as SlhDsaVerifyingKey};
 use std::env;
 use std::str::FromStr;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use websocket::{WsCloseCode, handle_ws_upgrade};
 
 #[derive(Serialize, Deserialize)]
@@ -65,6 +74,7 @@ struct UploadProofRequest {
     proof: String,
 }
 
+#[derive(Debug)]
 struct ValidatedInputs {
     pub bitcoin_address: BitcoinAddress,
     pub bitcoin_signed_message: BitcoinMessageSignature,
@@ -85,7 +95,7 @@ macro_rules! ok_or_bad_request {
         match $expr {
             Ok(val) => val,
             Err(e) => {
-                eprintln!("{}: {}", $err_msg, e);
+                log::error!("{}: {}", $err_msg, e);
                 return Err(close_code::POLICY);
             }
         }
@@ -96,11 +106,11 @@ macro_rules! ok_or_bad_request {
 #[macro_export]
 macro_rules! bad_request {
     ($err_msg:expr) => {{
-        eprintln!($err_msg);
+        log::error!($err_msg);
         return Err(close_code::POLICY);
     }};
     ($fmt:expr, $($arg:tt)*) => {{
-        eprintln!($fmt, $($arg)*);
+        log::error!($fmt, $($arg)*);
         return Err(close_code::POLICY);
     }};
 }
@@ -109,11 +119,11 @@ macro_rules! bad_request {
 #[macro_export]
 macro_rules! internal_error {
     ($err_msg:expr) => {{
-        eprintln!($err_msg);
+        log::error!($err_msg);
         return Err(close_code::ERROR);
     }};
     ($fmt:expr, $($arg:tt)*) => {{
-        eprintln!($fmt, $($arg)*);
+        log::error!($fmt, $($arg)*);
         return Err(close_code::ERROR);
     }};
 }
@@ -125,11 +135,110 @@ macro_rules! ok_or_internal_error {
         match $expr {
             Ok(val) => val,
             Err(e) => {
-                eprintln!("{}: {}", $err_msg, e);
+                log::error!("{}: {}", $err_msg, e);
                 return Err(close_code::ERROR);
             }
         }
     };
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Environment {
+    Production,
+    Development,
+}
+
+impl FromStr for Environment {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "production" => Ok(Environment::Production),
+            "development" => Ok(Environment::Development),
+            _ => Err("Environment must be `production` or `development`"),
+        }
+    }
+}
+
+impl Environment {
+    /// Given an Environment, what `PqNetwork` should we be on?
+    fn expected_pq_address_network(&self) -> PqNetwork {
+        match self {
+            Environment::Production => PqNetwork::Mainnet,
+            Environment::Development => PqNetwork::Testnet,
+        }
+    }
+
+    /// Configure CORS for the given environment.
+    ///
+    /// This function sets up the CORS layer with allowed methods and origins based on the environment.
+    ///
+    /// # Returns
+    /// - `Result<CorsLayer, String>`: A result containing the configured CORS layer or an error message.
+    ///
+    /// # Errors
+    ///
+    /// If the CORS configuration fails, an error message is returned.
+    fn cors_layer(&self) -> Result<CorsLayer, String> {
+        // Allowed Methods
+        let methods = [Method::GET];
+        // Allowed Origins
+        let origin_cfg = match self {
+            Environment::Development => {
+                let dev_allowed = [
+                    "http://localhost:3000",
+                    "https://yellowpages-development.xyz",
+                    "https://www.yellowpages-development.xyz",
+                ]
+                .map(|s| {
+                    HeaderValue::from_str(s).map_err(|e| format!("Invalid CORS origin `{s}`: {e}"))
+                })
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?;
+                // build a single matcher that first checks exact list,
+                // then falls back to the "yellowpages-client*.vercel.app" rule:
+                AllowOrigin::predicate(move |hv, _| {
+                    if dev_allowed.iter().any(|u| u.as_bytes() == hv.as_bytes()) {
+                        true
+                    } else {
+                        let s = hv.to_str().unwrap_or("");
+                        s.starts_with("https://yellowpages-client") && s.ends_with(".vercel.app")
+                    }
+                })
+            }
+            Environment::Production => {
+                // only these two in prod
+                let prod_allowed = ["https://www.yellowpages.xyz", "https://yellowpages.xyz"]
+                    .map(|s| {
+                        HeaderValue::from_str(s)
+                            .map_err(|e| format!("Invalid CORS origin `{s}`: {e}"))
+                    })
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()?;
+                AllowOrigin::list(prod_allowed)
+            }
+        };
+
+        Ok(CorsLayer::new()
+            .allow_methods(methods)
+            .allow_origin(origin_cfg))
+    }
+
+    /// Set up logging based on the environment.
+    ///
+    /// This function initializes the logger with different log levels based on the environment.
+    fn setup_logging(&self) {
+        let mut builder = match self {
+            Environment::Production => {
+                let mut b = env_logger::Builder::new();
+                b.filter_level(LevelFilter::Off);
+                b
+            }
+            Environment::Development => {
+                env_logger::Builder::from_env(Env::default().default_filter_or("debug"))
+            }
+        };
+        builder.init();
+    }
 }
 
 #[derive(Clone)]
@@ -137,6 +246,7 @@ struct Config {
     data_layer_url: String,
     data_layer_api_key: String,
     version: String,
+    environment: Environment,
 }
 
 impl Config {
@@ -190,10 +300,17 @@ impl Config {
         let version = env::var("VERSION").map_err(|_| "VERSION environment variable not set")?;
         Self::sanity_check_semver(&version)?;
 
+        let env_str =
+            env::var("ENVIRONMENT").map_err(|_| "ENVIRONMENT environment variable not set")?;
+        let environment = env_str
+            .parse::<Environment>()
+            .map_err(|e| format!("Invalid ENVIRONMENT: {e}"))?;
+
         Ok(Config {
             data_layer_url,
             data_layer_api_key,
             version,
+            environment,
         })
     }
 }
@@ -204,36 +321,46 @@ async fn main() {
     let config = match Config::from_env() {
         Ok(config) => config,
         Err(e) => {
+            // This cannot use log::error!() because the logger is not set up yet
             eprintln!("Failed to load config: {e}");
             std::process::exit(1);
         }
     };
 
-    // Configure CORS to allow all origins but restrict headers
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET]);
+    // Set up logging based on the environment
+    // This should be done right after loading the config and before any logging occurs
+    config.environment.setup_logging();
+
+    // Configure CORS to allow env specific origins & restrict headers
+    let cors = match config.environment.cors_layer() {
+        Ok(cors) => cors,
+        Err(e) => {
+            log::error!("Failed to build cors layer: {e}");
+            std::process::exit(1);
+        }
+    };
 
     // build our application with routes and CORS
     let app = Router::new()
         .route("/health", get(health))
         .route("/prove", get(handle_ws_upgrade))
         .with_state(config)
-        .layer(cors);
+        .layer(cors)
+        .layer(HelmetLayer::new(Helmet::default()));
 
-    println!("Server running on http://0.0.0.0:8008");
+    log::info!("Server running on http://0.0.0.0:8008");
 
     // run our app with hyper, listening globally on port 8008
     let listener = match tokio::net::TcpListener::bind("0.0.0.0:8008").await {
         Ok(listener) => listener,
         Err(e) => {
-            eprintln!("Failed to bind to port 8008: {e}");
+            log::error!("Failed to bind to port 8008: {e}");
             std::process::exit(1);
         }
     };
 
     if let Err(e) = axum::serve(listener, app).await {
-        eprintln!("Error starting server: {e}");
+        log::error!("Error starting server: {e}");
         std::process::exit(1);
     }
 }
@@ -254,7 +381,7 @@ async fn health(State(config): State<Config>) -> Json<serde_json::Value> {
 
 async fn prove(config: Config, proof_request: ProofRequest) -> WsCloseCode {
     // Log the received data
-    println!(
+    log::info!(
         "Received proof request - Bitcoin Address: {}, ML-DSA 44 Address: {}, SLH-DSA SHA2-S-128 Address: {}",
         proof_request.bitcoin_address,
         proof_request.ml_dsa_44_address,
@@ -271,7 +398,7 @@ async fn prove(config: Config, proof_request: ProofRequest) -> WsCloseCode {
         slh_dsa_sha2_s_128_address,
         slh_dsa_sha2_s_128_public_key,
         slh_dsa_sha2_s_128_signed_message,
-    } = match validate_inputs(&proof_request) {
+    } = match validate_inputs(&proof_request, &config) {
         Ok(result) => result,
         Err(code) => return code,
     };
@@ -338,7 +465,7 @@ async fn prove(config: Config, proof_request: ProofRequest) -> WsCloseCode {
     }
 
     // Success path
-    println!("All verifications completed successfully");
+    log::info!("All verifications completed successfully");
     close_code::NORMAL
 }
 
@@ -404,10 +531,7 @@ fn validate_lengths(proof_request: &ProofRequest) -> Result<(), WsCloseCode> {
     Ok(())
 }
 
-fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
-    // Validate that all required fields have reasonable lengths to avoid decoding large amounts of data
-    validate_lengths(proof_request)?;
-
+fn validate_bitcoin_inputs(proof_request: &ProofRequest) -> Result<BitcoinAddress, WsCloseCode> {
     // Parse the Bitcoin address
     let parsed_bitcoin_address = ok_or_bad_request!(
         BitcoinAddress::from_str(&proof_request.bitcoin_address),
@@ -423,7 +547,7 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
     // Validate the address type is either P2PKH or P2WPKH
     match bitcoin_address.address_type() {
         Some(AddressType::P2pkh | AddressType::P2wpkh) => {
-            println!("Valid address type: {:?}", bitcoin_address.address_type());
+            log::info!("Valid address type: {:?}", bitcoin_address.address_type());
         }
         other_type => {
             bad_request!(
@@ -433,7 +557,17 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
         }
     }
 
-    println!("Successfully parsed Bitcoin address: {bitcoin_address}");
+    log::info!("Successfully parsed Bitcoin address: {bitcoin_address}");
+
+    // Return the parsed Bitcoin address
+    Ok(bitcoin_address)
+}
+
+fn validate_inputs(proof_request: &ProofRequest, config: &Config) -> ValidationResult {
+    // Validate that all required fields have reasonable lengths to avoid decoding large amounts of data
+    validate_lengths(proof_request)?;
+    // Validate Bitcoin address
+    let bitcoin_address = validate_bitcoin_inputs(proof_request)?;
 
     // Decode the base64-encoded message
     let decoded_bitcoin_signed_message = ok_or_bad_request!(
@@ -452,6 +586,15 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
         decode_pq_address(&proof_request.ml_dsa_44_address),
         "Failed to decode ML-DSA 44 address"
     );
+
+    // Check if the address is for the expected network
+    if ml_dsa_44_address.network != config.environment.expected_pq_address_network() {
+        bad_request!(
+            "ML-DSA 44 address must be for {:?} when the environment is {:?}",
+            config.environment.expected_pq_address_network(),
+            config.environment
+        );
+    }
 
     // Check if the address is an ML-DSA 44 address
     if ml_dsa_44_address.pubkey_type != PqPubKeyType::MlDsa44 {
@@ -485,13 +628,22 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
         "Failed to parse ML-DSA 44 signature"
     );
 
-    println!("Successfully parsed ML-DSA 44 inputs");
+    log::info!("Successfully parsed ML-DSA 44 inputs");
 
     // Decode the SLH-DSA SHA2-S-128 address as a DecodedPqAddress
     let slh_dsa_sha2_s_128_address = ok_or_bad_request!(
         decode_pq_address(&proof_request.slh_dsa_sha2_s_128_address),
         "Failed to decode SLH-DSA SHA2-S-128 address"
     );
+
+    // Check if the address is for the expected network
+    if slh_dsa_sha2_s_128_address.network != config.environment.expected_pq_address_network() {
+        bad_request!(
+            "SLH-DSA SHA2-S-128 address must be for {:?} when the environment is {:?}",
+            config.environment.expected_pq_address_network(),
+            config.environment
+        );
+    }
 
     // Check if the address is an SLH-DSA SHA2-S-128 address
     if slh_dsa_sha2_s_128_address.pubkey_type != PqPubKeyType::SlhDsaSha2S128 {
@@ -524,7 +676,7 @@ fn validate_inputs(proof_request: &ProofRequest) -> ValidationResult {
         "Failed to parse SLH-DSA SHA2-S-128 signature"
     );
 
-    println!("Successfully parsed SLH-DSA SHA2-S-128 inputs");
+    log::info!("Successfully parsed SLH-DSA SHA2-S-128 inputs");
 
     Ok(ValidatedInputs {
         bitcoin_address,
@@ -544,7 +696,13 @@ fn generate_expected_message(
     slh_dsa_sha2_s_128_address: &DecodedPqAddress,
 ) -> String {
     format!(
-        "I want to permanently link my Bitcoin address {bitcoin_address} with my post-quantum addresses: ML-DSA-44 – {ml_dsa_44_address}, SLH-DSA-SHA2-128 – {slh_dsa_sha2_s_128_address}"
+        r"yellowpages.xyz
+
+I want to permanently link my Bitcoin address with the following post-quantum addresses:
+
+Bitcoin address: {bitcoin_address}
+ML-DSA-44 address: {ml_dsa_44_address}
+SLH-DSA-SHA2-128s address: {slh_dsa_sha2_s_128_address}"
     )
 }
 
@@ -564,7 +722,7 @@ fn verify_bitcoin_ownership(
         "Failed to recover public key"
     );
 
-    println!("Recovered public key: {recovered_public_key}");
+    log::info!("Recovered public key: {recovered_public_key}");
 
     // Step 3: Double-check signature validity
     // Convert the recoverable signature to a standard signature
@@ -582,14 +740,14 @@ fn verify_bitcoin_ownership(
         "Failed to verify signature"
     );
 
-    println!("Signature is valid. Message successfully verified.");
+    log::info!("Signature is valid. Message successfully verified.");
 
     // Step 4: Verify that the recovered public key matches the address
     match address.address_type() {
         Some(AddressType::P2pkh | AddressType::P2wpkh) => {
             // Check if the address is related to the recovered public key
             if address.is_related_to_pubkey(&recovered_public_key) {
-                println!("Address ownership verified: recovered public key matches the address");
+                log::info!("Address ownership verified: recovered public key matches the address");
             } else {
                 bad_request!(
                     "Address ownership verification failed: public key does not match the address"
@@ -604,7 +762,7 @@ fn verify_bitcoin_ownership(
         }
     }
 
-    println!("Successfully verified Bitcoin ownership for {address}");
+    log::info!("Successfully verified Bitcoin ownership for {address}");
     Ok(())
 }
 
@@ -620,7 +778,7 @@ fn verify_ml_dsa_44_ownership(
         "Failed to verify ML-DSA 44 signature"
     );
 
-    println!("ML-DSA 44 signature verified successfully");
+    log::info!("ML-DSA 44 signature verified successfully");
 
     // Verify that the public key matches the address
     // The address should be the SHA256 hash of the encoded public key
@@ -628,7 +786,7 @@ fn verify_ml_dsa_44_ownership(
     let computed_address = sha256::Hash::hash(&encoded_key[..]).to_byte_array();
 
     if computed_address == address.pubkey_hash_bytes() {
-        println!("ML-DSA 44 address ownership verified: public key hash matches the address");
+        log::info!("ML-DSA 44 address ownership verified: public key hash matches the address");
     } else {
         bad_request!(
             "ML-DSA 44 address verification failed: public key hash does not match the address"
@@ -650,7 +808,7 @@ fn verify_slh_dsa_sha2_s_128_ownership(
         "Failed to verify SLH-DSA SHA2-S-128 signature"
     );
 
-    println!("SLH-DSA SHA2-S-128 signature verified successfully");
+    log::info!("SLH-DSA SHA2-S-128 signature verified successfully");
 
     // Verify that the public key matches the address
     // The address should be the SHA256 hash of the encoded public key
@@ -658,7 +816,7 @@ fn verify_slh_dsa_sha2_s_128_ownership(
     let computed_address = sha256::Hash::hash(&encoded_key[..]).to_byte_array();
 
     if computed_address == address.pubkey_hash_bytes() {
-        println!(
+        log::info!(
             "SLH-DSA SHA2-S-128 address ownership verified: public key hash matches the address"
         );
     } else {
@@ -768,7 +926,16 @@ mod tests {
         Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
         aead::{Aead, KeyInit},
     };
-    use axum::{http::StatusCode, response::IntoResponse, routing::post};
+    use axum::{
+        body::Body,
+        {Router, routing::get},
+    };
+    use axum::{
+        http::StatusCode,
+        http::{HeaderMap, Request, header},
+        response::IntoResponse,
+        routing::post,
+    };
     use futures_util::{SinkExt, StreamExt};
     use ml_dsa::{KeyGen, signature::Signer};
     use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, SharedKey, kem::Decapsulate};
@@ -782,10 +949,20 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
+    use tower::ServiceExt; // for .oneshot()
     use websocket::AES_GCM_NONCE_LENGTH;
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
+
+    fn test_config() -> Config {
+        Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: "1.1.0".to_string(),
+            environment: Environment::Development,
+        }
+    }
 
     // Mock handler for attestation requests
     #[allow(clippy::needless_pass_by_value)]
@@ -873,10 +1050,10 @@ mod tests {
     // Constants for test data
     const VALID_BITCOIN_ADDRESS_P2PKH: &str = "1JQcr9RQ1Y24Lmnuyjc6Lxbci6E7PpkoQv";
     const VALID_BITCOIN_SIGNED_MESSAGE_P2PKH: &str =
-        "HziEt2hqF40ayCWMuIaKAnZWyJcUGlrIyd9gvahpMuQhTfrybwDkPinGWp9Oi5i6J+bIpDQcMaHXkg2hYrDpR4w=";
+        "IAdirPDfy6dkSclK2Q9NOMZsaqXNkoQzcpEOHxqmBz1FdLKWZwkRAHbhTYwQhONG83fmI8hytqF3e8D0p7QEYAQ=";
     const VALID_BITCOIN_ADDRESS_P2WPKH: &str = "bc1qhmc6zxfgtu42h2gujshh0f44ph55sjglncd3xj";
     const VALID_BITCOIN_SIGNED_MESSAGE_P2WPKH: &str =
-        "IHh7YGdMouBipj9uul4go609Xl5mgD7RjesdD6LjYgvsD8i+2NeWyJwyti7GJzvpapFRZ0so6vbXTJTrf5UrtSw=";
+        "HzRIuQSynILLjymsxLaiPrUw5BKbmh+XoW1X/lV2zObdDeWeFvSHRWOXGyHFfTVxirXKEFPcEmCRmF2Y3QgyQRs=";
     const INVALID_BITCOIN_SIGNATURE: &str =
         "IHHwE2wSfJU3Ej5CQA0c8YZIBBl9/knLNfwzOxFMQ3fqZNStxzkma0Jwko+T7JMAGIQqP5d9J2PcQuToq5QZAhk="; // Signature for "goodbye world" made  with `VALID_BITCOIN_ADDRESS_P2PKH`
     const P2TR_ADDRESS: &str = "bc1pxwww0ct9ue7e8tdnlmug5m2tamfn7q06sahstg39ys4c9f3340qqxrdu9k"; // Taproot address
@@ -884,24 +1061,224 @@ mod tests {
 
     // ML-DSA 44 test data
     const VALID_ML_DSA_44_ADDRESS: &str =
-        "rh1qpqf3nsu4tuqqwhhx2u5jfxcce6kprx52uc28s50d6c2ft90vnhhdks6m9lmd"; // MlDsa44 address generated using the pq_address crate with VALID_ML_DSA_44_PUBLIC_KEY
-    const VALID_ML_DSA_44_SIGNATURE: &str = "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";
-    const VALID_ML_DSA_44_PUBLIC_KEY: &str = "s5Et8AsqNmifDNTG5chS66Bzn2o1+QtSXm65REUGNnC139cm1fY3T14HYALfc97hKc4z1e7c+TtU8ayMW4w7XLqjq7QHpNEdPGzB+sw03bLja2NJ8IhSoOyEFEBOZkdWRrgRDedKa5YB64bRQjAeuU+r7271I0AII3blCEAc+s2AXLubJ25nqDs8XP2M3AcCOIZyRv1rloLpV/aQRcr5UDCQ/gqJaKPOoLRh4tfrVjunMXa7egbOIo04Rsecv/WxEQpNaCr9YTl40ADhf/Q3ibUQ/eTZgO5pd/r3njF95HoBuPz+iiN3wd/lrpSgZPRxY+VScU+THbc3p65f8kz8ClK2fEiEvdxfs6CSlNP3Y1GwwrZy+o3ZUBl0QHPxJkO0h+0l4qjQw+zG9gfxKb+KIJE6a6MNQzug+CM30fIGRwPRlP1yXhtddKLmbZg8SUkOiUh6jdH45Ewwx67rbxRefvbLqDAESla+BSjVN7ywAuy0cKkQA/rYWjvjVK/9+mm6tNiwdIprVcI+22d+A92GKjrJv07jDezNaFMU4A8PGJ2YLcgmtx6pFeOM33vSS2i8aJYAsHd3BSsysEk2dCuu5G0uHXcex9A/vTanHOaG/5IvNsS6SLDawQ2P6iB6jFyJDRemZydEtQK8fAsJ+gt2umOS8ubHQRate2GUngI2ydV8EAN064OCWr70sHzbuwdFQ/ffMFhAHy+1cU20+khzeVztOXL3lD6YsRh//K2GzYVO2VzCCURbxUQfSLoOsr0rs9POINx41weGdDyiusszBCyNMHtq95EEYvhnQc+lXI6LGDGvWApQ7mPLlj6Yx+a8kwzy6vaBZDa7jcM0n8o8s9qvfDgqg4ZuVT34j4ELqkPWPDZcSduuncDXmxFYEdYncd8Kkq4zrcIS3utLzdIgPUSFGF7RpJLMxPADDUhNzJ07G6bT04DTOLdLNIHtfJRkOXa/Z1mWva7Qz37bgg6Hd3Y0fg5hFGR1k+qfdHJcJgUblXvMku8nT+gzTJ+oFRzNuMaFfyYSx9kfZStuZ8rK7o/wvyEHRbjNzXPjHVWmVt/FftnYcu3qO9/wOtqD66HC/tcLoYW7zXXh+hUAInMkb4ZCTGOdZcIUrQJ/Wf8DCY4BB+JzfzlYFXjPYpBlD+IKSPBY63Jrn0QAfsVdcg312sJ7AH/G8EEYpZ/LFleK8SdVoqQHgX7DT4utor2Ywgfk93ubqUXbQeeieD4ZJFdC2vh3dP9TSx0yDP4njwrz4fuUp6hBLBFoBpbwjS3I3lyZTyLOV0IIbb4dA314VVCO7KcfagKVoA17La091jugQe6GhGUmNxtqjjIkQx5AcVCzqFa7Lbs64bhV/KGryc2jEoCIMpFj0ikCA61Qo3cBjPDeVL99kCK11aAiCR3OKByYrOZFFDlLVX8szTeCGXYpNYTmF2JOZfPfbwVbCr2rnIWrovBIg/6NqRyTKQt2ipvG09YzRWZDGuHOM0mS4eLo2BwFSuMq1UVZwLs57M4P8v55GUkY2XTb+DLCYFOSVBOthnTBSoLgiy9uSodlsu8aQHIoypbj+++MrV3G8e+UP0FYkcys2ivbehCcLAcD0zz+gWEYAI+kkzYwQWp/zhDmyann/GW1S7xUFRqREUmLnrvnK8M2+nMIQydYOacDGtO7EyAVvc7uATfP1KfGqZrN6PkPTghYdUOa4r+XUiLTDXviEolWW9jjYx1vDHrjtBZqgbhBHqQJSMiithqwBB3nPQ==";
+        "rh1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hsmmfzpd"; // MlDsa44 address generated using the pq_address crate with VALID_ML_DSA_44_PUBLIC_KEY
+    const VALID_ML_DSA_44_SIGNATURE: &str = "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";
+    const VALID_ML_DSA_44_PUBLIC_KEY: &str = "e+ffcul9XkuQCkiCEYX2ES6KMGJ9c7+Z0PFfhnJRckbaHzh4EH9hcEkUoFZ4gK2ta6/xPzgxB1yTT92wPZw8SmrK3DeLMz9mkst0IWkSzJ/TPPHRcSYJekO+CLV8k7uXsGSSoK4fbLqkX8leQFMCzjzRYg06zb3SD7iQwK3O8dP2WWLa9PkBMl1LECCBtTHrxoqyYtKopNbn3wICOOxI1jjTTL46AZnE6Vw2vQdLB/Qg59Pq6su8P3zEqBbsVPwPpT9ZbBNCHE+puWjdYnOfttj6DZ748CRHibQ9WTkH+VpxssIxU62nsYes/fV85nDozwddZggZoLfRsmSlG1Yz6h4m5hMMu9Nku9myTTw4UCiGSxZmad+yIjl7hh6J3wDaLMDA6SXajLSXTk2RwmnsEUlYs+uXS6Wj5wzg+bLQDQVMkU+doOf4vPTArf4uwzJdZ9Ghp8vjHd+rQgKjuo+Hy+HWz4JgvaQXlln+3yF0eY4/v01Bhe8BwVCbFZX8ts2Ay53gJmZEtsnXw3d5xedAMO9LJt4UqwovnmWCuApzAG9jyvG3Wxxe572E725S4vLtgnESzfrsD3wWo/A0oP+wk4oOFjhRDdVwHzwBDiHPhl43b/lt6omQuxK+xF0BJ77X/VhAoCx5zwIQ1GnmtXmP5xqx8f+e9ceFWNSxBPVKakKx/BveCxF1uOLc7DZUFLDVxRBURiF4BQX/670+FaYF2BWS3XtxfCqxaCz3F177qUev3pYuwpvSIj6WNSmU8uyxvibSzvYtA50gQtznTfteWja14B8AB+rgagz5nEzRzO7u1+QmxbdvEyBKvmWzNtnvsNqee4LhU9sl6rPdyUScmDrCPVLiPhrqY/sBVfxzX6z40suflYFPYU+fE6lApXnpyDB8he25DmnmPYTEsCq9d2uYaYTSBAgeir0qi9Jnjj/mcJ/3sNwwTlh7Tp6ahJlqWEUJ4myGxcHEesgWAeIrqJ6bhHTxP1n+do4ffry4CMcAjoAPAwYY0JUTYANy722LbOgiN+z5KUryC/MYjw/azOHFcpYjsGR60fARG03yVBgNBuD5okkmxtrAGdS4w85UDMAa/dwobUI5bdigFHP0Av6hHQ5uxeaxt1gAO53veGmA8aIOidhtZyHhlv+ANl9VYyZMOdPP1DjBTd8AQTIGR2JglmGzE8/00Ndx736MNdVzxNG0iKOvLlgl3cd1cEjW6hfC47juSDCgZTs9oPeo2mr1qvtak7zVd/yByjP9KHh0mjCi3cZDButaTe/oic4bdf24xQDtahSEJpAf49i9gzIpqxG92pyM7HRaVSvScFmCNnNKLJSDCeYw4+zlU+jawGKPjX6ebFDGFV1gNiPvkZdYd/5UXFwpHt5saj/Lgfoe/BtJWUx53TNkYlTNytflgV/ssFo8k9aYlIq2SDDKeZdlZexeNJOvhr8yntOQzLK6WWVONUgilTFNKX3+NQTmMR1LhA7VSP17+/3NjM0wEaz/JpKRoqMMvrgzl2A/6s019UMoT81hGXNtk9Ed8vxtdeNi1BC+SHWWyazundxXMQ4/gD7PnJXQJduz0QZ8quxRQZZTn+u+t1hKyMQikRKqephJaIQv9NLnKffPncEii9ukfRuLLCy7hPFuAho1Bfgi6rJMN0AxlX9URe6LB6vjLMNdTvWVqCHtBvay4scJg58my00razBF8BhQe7db+UJiv5JwADSJ2fwO/oooReksH3Sv1U4UOx5Y7kK8bbChFg==";
     const INVALID_ML_DSA_44_ADDRESS: &str = "invalid_address";
 
-    const VALID_ML_DSA_44_SIGNATURE_P2WPKH: &str = "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";
+    const VALID_ML_DSA_44_SIGNATURE_P2WPKH: &str = "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";
 
     // SLH-DSA SHA2-S-128
     const VALID_SLH_DSA_SHA2_128_ADDRESS: &str =
-        "rh1qpqjl8vzuprzhnplx2thzcusrj6ma9wxaes327hfjmqcsqwwxxfm7vqf4w7ay"; // SLH-DSA SHA2-S-128 address generated using the pq_address crate with VALID_SLH_DSA_SHA2_128_PUBLIC_KEY
-    const VALID_SLH_DSA_SHA2_128_SIGNATURE: &str = "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";
-    const VALID_SLH_DSA_SHA2_128_PUBLIC_KEY: &str = "TKtipiztcVgvEH/FtEqrJ2tjqUFV1RS94uTTvVEn9UY=";
+        "rh1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5s5m48q0"; // SLH-DSA SHA2-S-128 address generated using the pq_address crate with VALID_SLH_DSA_SHA2_128_PUBLIC_KEY
+    const VALID_SLH_DSA_SHA2_128_SIGNATURE: &str = "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";
+    const VALID_SLH_DSA_SHA2_128_PUBLIC_KEY: &str = "Wi6WLwN39BUnK7X4gkIG101E2zMZWNAVdOsrG8/IxN4=";
     const INVALID_SLH_DSA_SHA2_128_ADDRESS: &str = "invalid_address";
 
-    const VALID_SLH_DSA_SHA2_128_SIGNATURE_P2WPKH: &str = "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";
+    const VALID_SLH_DSA_SHA2_128_SIGNATURE_P2WPKH: &str = "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";
+
+    /// Spin up a 1-route app with the CORS layer.
+    fn setup_app(env: &Environment) -> Router {
+        let cors = env.cors_layer().expect("bad CORS config");
+        let helmet = HelmetLayer::new(Helmet::default());
+        Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(cors)
+            .layer(helmet)
+    }
+
+    /// Fire a GET / with the given Origin, return the response headers.
+    async fn send_req(app: &Router, origin: &str) -> HeaderMap {
+        let req = Request::builder()
+            .method("GET")
+            .uri("/")
+            .header(header::ORIGIN, origin)
+            .body(Body::empty())
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap().headers().clone()
+    }
+
+    #[tokio::test]
+    async fn dev_allows_exact_listed_domains() {
+        let app = setup_app(&Environment::Development);
+        for origin in &[
+            "http://localhost:3000",
+            "https://yellowpages-development.xyz",
+            "https://www.yellowpages-development.xyz",
+        ] {
+            let headers = send_req(&app, origin).await;
+            assert_eq!(
+                headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+                *origin,
+                "Expected dev to allow {origin}",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dev_allows_vercel_preview_predicate() {
+        let app = setup_app(&Environment::Development);
+        // must start with exactly "https://yellowpages-client" and end with ".vercel.app"
+        let origin = "https://yellowpages-client123.vercel.app";
+        let headers = send_req(&app, origin).await;
+        assert_eq!(
+            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+            origin,
+            "Expected dev to allow Vercel preview with yellowpages-client prefix"
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_rejects_non_yellowpages_vercel_preview() {
+        let app = setup_app(&Environment::Development);
+        // wrong prefix for predicate
+        let origin = "https://foo.vercel.app";
+        let headers = send_req(&app, origin).await;
+        assert!(
+            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
+            "Dev should reject Vercel preview without yellowpages-client prefix"
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_rejects_prod_domains() {
+        let app = setup_app(&Environment::Development);
+        for origin in &["https://www.yellowpages.xyz", "https://yellowpages.xyz"] {
+            let headers = send_req(&app, origin).await;
+            assert!(
+                headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
+                "Expected dev to reject prod {origin}",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dev_rejects_evil_domain() {
+        let app = setup_app(&Environment::Development);
+        let headers = send_req(&app, "https://evil.com").await;
+        assert!(
+            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
+            "Dev should reject evil.com"
+        );
+    }
+
+    #[tokio::test]
+    async fn prod_allows_both_www_and_non_www() {
+        let app = setup_app(&Environment::Production);
+        for origin in &["https://www.yellowpages.xyz", "https://yellowpages.xyz"] {
+            let headers = send_req(&app, origin).await;
+            assert_eq!(
+                headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+                *origin,
+                "Expected prod to allow {origin}",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn prod_rejects_dev_domains() {
+        let app = setup_app(&Environment::Production);
+        for origin in &[
+            "http://localhost:3000",
+            "https://yellowpages-development.xyz",
+            "https://www.yellowpages-development.xyz",
+        ] {
+            let headers = send_req(&app, origin).await;
+            assert!(
+                headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
+                "Expected prod to reject dev {origin}",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn prod_rejects_evil_domain() {
+        let app = setup_app(&Environment::Production);
+        let headers = send_req(&app, "https://evil.com").await;
+        assert!(
+            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
+            "Prod should reject evil.com"
+        );
+    }
+
+    #[tokio::test]
+    async fn helmet_sets_default_security_headers() {
+        let app = setup_app(&Environment::Development);
+        let origin = "https://yellowpages-development.xyz";
+        let headers = send_req(&app, origin).await;
+        assert_eq!(
+            headers.get("content-security-policy").unwrap(),
+            "default-src 'self'; base-uri 'self'; font-src 'self' https: data:; \
+             form-action 'self'; frame-ancestors 'self'; img-src 'self' data:; \
+             object-src 'none'; script-src 'self'; script-src-attr 'none'; \
+             style-src 'self' https: 'unsafe-inline'; upgrade-insecure-requests",
+            "CSP must lock down all sources"
+        );
+        assert_eq!(
+            headers.get("cross-origin-opener-policy").unwrap(),
+            "same-origin",
+            "COOP must be same-origin"
+        );
+        assert_eq!(
+            headers.get("cross-origin-resource-policy").unwrap(),
+            "same-origin",
+            "CORP must be same-origin"
+        );
+        assert_eq!(
+            headers.get("origin-agent-cluster").unwrap(),
+            "?1",
+            "Origin-Agent-Cluster must be ?1"
+        );
+        assert_eq!(
+            headers.get("referrer-policy").unwrap(),
+            "no-referrer",
+            "Referrer-Policy must be no-referrer"
+        );
+        assert_eq!(
+            headers.get("strict-transport-security").unwrap(),
+            "max-age=15552000; includeSubDomains",
+            "HSTS must be 180 days with subdomains"
+        );
+        assert_eq!(
+            headers.get("x-content-type-options").unwrap(),
+            "nosniff",
+            "X-Content-Type-Options must be nosniff"
+        );
+        assert_eq!(
+            headers.get("x-dns-prefetch-control").unwrap(),
+            "off",
+            "X-DNS-Prefetch-Control must be off"
+        );
+        assert_eq!(
+            headers.get("x-download-options").unwrap(),
+            "noopen",
+            "X-Download-Options must be noopen"
+        );
+        assert_eq!(
+            headers.get("x-frame-options").unwrap(),
+            "SAMEORIGIN",
+            "X-Frame-Options must be sameorigin"
+        );
+        assert_eq!(
+            headers.get("x-permitted-cross-domain-policies").unwrap(),
+            "none",
+            "X-Permitted-Cross-Domain-Policies must be none"
+        );
+        assert_eq!(
+            headers.get("x-xss-protection").unwrap(),
+            "0",
+            "X-XSS-Protection must be 0"
+        );
+    }
 
     #[test]
     fn test_validate_inputs_valid_data() {
+        let config = Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: "1.1.0".to_string(),
+            environment: Environment::Development,
+        };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
@@ -913,8 +1290,97 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &config);
         assert!(result.is_ok(), "Validation should pass with valid inputs");
+    }
+
+    const PROD_ML_DSA_44_ADDRESS: &str =
+        "yp1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hs5cdx7q";
+    const DEV_ML_DSA_44_ADDRESS: &str =
+        "rh1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hsmmfzpd";
+    const PROD_SLH_DSA_SHA2_128_ADDRESS: &str =
+        "yp1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5smc3rlz";
+    const DEV_SLH_DSA_SHA2_128_ADDRESS: &str =
+        "rh1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5s5m48q0";
+
+    #[test]
+    fn test_validate_inputs_invalid_environment() {
+        let config = Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: "1.1.0".to_string(),
+            environment: Environment::Development,
+        };
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
+            ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
+            ml_dsa_44_address: PROD_ML_DSA_44_ADDRESS.to_string(),
+            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: DEV_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
+        };
+        let err = validate_inputs(&proof_request, &config).unwrap_err();
+        assert_eq!(
+            err,
+            close_code::POLICY,
+            "Expected a POLICY error for a network mismatch, got {err}",
+        );
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
+            ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
+            ml_dsa_44_address: DEV_ML_DSA_44_ADDRESS.to_string(),
+            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: PROD_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
+        };
+        let err = validate_inputs(&proof_request, &config).unwrap_err();
+        assert_eq!(
+            err,
+            close_code::POLICY,
+            "Expected a POLICY error for a network mismatch, got {err}",
+        );
+        let config = Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: "1.1.0".to_string(),
+            environment: Environment::Production,
+        };
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
+            ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
+            ml_dsa_44_address: DEV_ML_DSA_44_ADDRESS.to_string(),
+            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: PROD_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
+        };
+        let err = validate_inputs(&proof_request, &config).unwrap_err();
+        assert_eq!(
+            err,
+            close_code::POLICY,
+            "Expected a POLICY error for a network mismatch, got {err}",
+        );
+        let proof_request = ProofRequest {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            bitcoin_signed_message: VALID_BITCOIN_SIGNED_MESSAGE_P2PKH.to_string(),
+            ml_dsa_44_signed_message: VALID_ML_DSA_44_SIGNATURE.to_string(),
+            ml_dsa_44_address: PROD_ML_DSA_44_ADDRESS.to_string(),
+            ml_dsa_44_public_key: VALID_ML_DSA_44_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_address: DEV_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_public_key: VALID_SLH_DSA_SHA2_128_PUBLIC_KEY.to_string(),
+            slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
+        };
+        let err = validate_inputs(&proof_request, &config).unwrap_err();
+        assert_eq!(
+            err,
+            close_code::POLICY,
+            "Expected a POLICY error for a network mismatch, got {err}",
+        );
     }
 
     #[test]
@@ -930,7 +1396,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(result.is_err(), "Validation should fail with empty address");
     }
 
@@ -947,7 +1413,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(
             result.is_err(),
             "Validation should fail with invalid address"
@@ -967,7 +1433,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(result.is_err(), "Validation should fail with p2tr address");
     }
 
@@ -984,7 +1450,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(
             result.is_err(),
             "Validation should fail with short signature"
@@ -1004,7 +1470,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(
             result.is_err(),
             "Validation should fail with long signature"
@@ -1024,7 +1490,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(
             result.is_err(),
             "Validation should fail with invalid base64"
@@ -1050,7 +1516,7 @@ mod tests {
             ml_dsa_44_address,
             slh_dsa_sha2_s_128_address,
             ..
-        } = validate_inputs(&proof_request).unwrap();
+        } = validate_inputs(&proof_request, &test_config()).unwrap();
         let expected_message = generate_expected_message(
             &bitcoin_address,
             &ml_dsa_44_address,
@@ -1085,7 +1551,7 @@ mod tests {
             ml_dsa_44_address,
             slh_dsa_sha2_s_128_address,
             ..
-        } = validate_inputs(&proof_request).unwrap();
+        } = validate_inputs(&proof_request, &test_config()).unwrap();
         let expected_message = generate_expected_message(
             &bitcoin_address,
             &ml_dsa_44_address,
@@ -1113,7 +1579,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(
             result.is_err(),
             "Validation should fail with invalid ML-DSA address"
@@ -1133,7 +1599,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
         assert!(
             result.is_err(),
             "Validation should fail with invalid SLH-DSA address"
@@ -1153,7 +1619,7 @@ mod tests {
             slh_dsa_sha2_s_128_signed_message: VALID_SLH_DSA_SHA2_128_SIGNATURE.to_string(),
         };
 
-        let result = validate_inputs(&proof_request);
+        let result = validate_inputs(&proof_request, &test_config());
 
         assert!(
             result.is_ok(),
@@ -1181,7 +1647,7 @@ mod tests {
             ml_dsa_44_address,
             slh_dsa_sha2_s_128_address,
             ..
-        } = validate_inputs(&proof_request).unwrap();
+        } = validate_inputs(&proof_request, &test_config()).unwrap();
         let expected_message = generate_expected_message(
             &bitcoin_address,
             &ml_dsa_44_address,
@@ -1448,7 +1914,7 @@ mod tests {
             slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
         };
 
-        // Encode using our new method
+        // Encode to base64
         let user_data_base64 = user_data.encode().unwrap();
 
         // Verify we can decode it back
@@ -1466,6 +1932,30 @@ mod tests {
     }
 
     #[test]
+    fn test_user_data_encoding_length() {
+        // Max encoded user data size is 1KB
+        // https://github.com/aws/aws-nitro-enclaves-nsm-api/blob/main/docs/attestation_process.md#22-attestation-document-specification
+        const MAX_ENCODED_USER_DATA: usize = 1024;
+        // Create and encode user data
+        let user_data = UserData {
+            bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
+            ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
+            slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
+        };
+
+        // Encode to base64
+        let user_data_base64 = user_data.encode().unwrap();
+
+        // Assert it never exceeds 1 KB
+        assert!(
+            user_data_base64.len() <= MAX_ENCODED_USER_DATA,
+            "Encoded user_data is {} bytes; must be ≤ {} bytes",
+            user_data_base64.len(),
+            MAX_ENCODED_USER_DATA
+        );
+    }
+
+    #[test]
     fn test_sanity_check_semver() {
         // Valid cases - just check for three parts
         assert!(Config::sanity_check_semver("1.2.3").is_ok());
@@ -1476,6 +1966,35 @@ mod tests {
         assert!(Config::sanity_check_semver("1.2").is_err());
         assert!(Config::sanity_check_semver("1.2.3.4").is_err());
         assert!(Config::sanity_check_semver("").is_err());
+    }
+
+    #[test]
+    fn test_sanity_check_environment() {
+        // valid values
+        assert_eq!(
+            Environment::from_str("production"),
+            Ok(Environment::Production)
+        );
+        assert_eq!(
+            Environment::from_str("development"),
+            Ok(Environment::Development)
+        );
+
+        // empty string should be rejected
+        assert_eq!(
+            Environment::from_str(""),
+            Err("Environment must be `production` or `development`")
+        );
+
+        // anything else is rejected with the generic message
+        assert_eq!(
+            Environment::from_str(" "),
+            Err("Environment must be `production` or `development`")
+        );
+        assert_eq!(
+            Environment::from_str("foo"),
+            Err("Environment must be `production` or `development`")
+        );
     }
 
     #[test]
@@ -1505,6 +2024,7 @@ mod tests {
             data_layer_url: "http://127.0.0.1:9998".to_string(),
             data_layer_api_key: "mock_api_key".to_string(),
             version: TEST_VERSION.to_string(),
+            environment: Environment::Development,
         }))
         .await;
         assert_eq!(body["status"], "ok");
@@ -1586,6 +2106,7 @@ mod tests {
             data_layer_url: "http://127.0.0.1:9998".to_string(),
             data_layer_api_key: "mock_api_key".to_string(),
             version: TEST_VERSION.to_string(),
+            environment: Environment::Development,
         };
 
         // Start a WebSocket server with the main WebSocket handler
@@ -1664,7 +2185,7 @@ mod tests {
             Ok(shared_secret)
         } else {
             // Unexpected response - this should never happen in tests
-            println!("Unexpected response type");
+            log::info!("Unexpected response type");
             Err(close_code::ERROR)
         }
     }
@@ -1999,7 +2520,7 @@ mod tests {
             ml_dsa_44_signed_message,
             slh_dsa_sha2_s_128_address,
             ..
-        } = validate_inputs(&proof_request).unwrap();
+        } = validate_inputs(&proof_request, &test_config()).unwrap();
 
         let expected_message = generate_expected_message(
             &bitcoin_address,
@@ -2040,7 +2561,7 @@ mod tests {
             slh_dsa_sha2_s_128_public_key,
             slh_dsa_sha2_s_128_signed_message,
             ..
-        } = validate_inputs(&proof_request).unwrap();
+        } = validate_inputs(&proof_request, &test_config()).unwrap();
 
         let expected_message = generate_expected_message(
             &bitcoin_address,
@@ -2071,8 +2592,15 @@ mod tests {
         let ml_dsa_44_address = decode_pq_address(VALID_ML_DSA_44_ADDRESS).unwrap();
         let slh_dsa_sha2_s_128_address = decode_pq_address(VALID_SLH_DSA_SHA2_128_ADDRESS).unwrap();
 
-        // Expected output
-        let expected_message = "I want to permanently link my Bitcoin address 1JQcr9RQ1Y24Lmnuyjc6Lxbci6E7PpkoQv with my post-quantum addresses: ML-DSA-44 – rh1qpqf3nsu4tuqqwhhx2u5jfxcce6kprx52uc28s50d6c2ft90vnhhdks6m9lmd, SLH-DSA-SHA2-128 – rh1qpqjl8vzuprzhnplx2thzcusrj6ma9wxaes327hfjmqcsqwwxxfm7vqf4w7ay";
+        // expected message
+        let expected_message = r"yellowpages.xyz
+
+I want to permanently link my Bitcoin address with the following post-quantum addresses:
+
+Bitcoin address: 1JQcr9RQ1Y24Lmnuyjc6Lxbci6E7PpkoQv
+ML-DSA-44 address: rh1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hsmmfzpd
+SLH-DSA-SHA2-128s address: rh1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5s5m48q0";
+
         // Call the function
         let result = generate_expected_message(
             &bitcoin_address,
