@@ -101,12 +101,9 @@ pub async fn handle_ws_upgrade(
     log::info!("Received WebSocket upgrade request");
 
     // Extract and validate Turnstile token from query parameters
-    let turnstile_token = match params.get("cf_turnstile_token") {
-        Some(token) => token,
-        None => {
-            log::error!("Missing turnstile_token query parameter");
-            return HttpStatusCode::BAD_REQUEST.into_response();
-        }
+    let Some(turnstile_token) = params.get("cf_turnstile_token") else {
+        log::error!("Missing turnstile_token query parameter");
+        return HttpStatusCode::BAD_REQUEST.into_response();
     };
 
     // Check Turnstile token length

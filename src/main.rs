@@ -2427,7 +2427,7 @@ mod tests {
         .await;
 
         // Connect to the WebSocket server with invalid turnstile token
-        let ws_url = format!("ws://127.0.0.1:8008/prove?cf_turnstile_token=invalid");
+        let ws_url = "ws://127.0.0.1:8008/prove?cf_turnstile_token=invalid".to_string();
         let connection_result = connect_async(ws_url).await;
 
         // The connection should fail with an HTTP error due to invalid turnstile token
@@ -2446,7 +2446,7 @@ mod tests {
                     "Should get 403 Forbidden status for invalid turnstile token"
                 );
             }
-            _ => panic!("Expected HTTP error, got: {:?}", error),
+            _ => panic!("Expected HTTP error, got: {error:?}"),
         }
     }
 
@@ -2462,7 +2462,7 @@ mod tests {
         .await;
 
         // Connect to the WebSocket server with invalid turnstile token
-        let ws_url = format!("ws://127.0.0.1:8008/prove");
+        let ws_url = "ws://127.0.0.1:8008/prove".to_string();
         let connection_result = connect_async(ws_url).await;
 
         // The connection should fail with an HTTP error due to invalid turnstile token
@@ -2481,7 +2481,7 @@ mod tests {
                     "Should get 400 Bad Request status for invalid turnstile token"
                 );
             }
-            _ => panic!("Expected HTTP error, got: {:?}", error),
+            _ => panic!("Expected HTTP error, got: {error:?}"),
         }
     }
 
