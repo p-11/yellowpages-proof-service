@@ -93,46 +93,6 @@ struct TurnstileResponse {
     error_codes: Vec<String>,
 }
 
-/// Validates a Cloudflare Turnstile token
-async fn validate_cloudflare_turnstile_token(
-    token: &str,
-    config: &Config,
-) -> Result<(), WsCloseCode> {
-    // In development mode, allow test token with test secret key
-    let secret_key = if matches!(config.environment, Environment::Development)
-        && token == TURNSTILE_TEST_DUMMY_TOKEN
-    {
-        TURNSTILE_TEST_SECRET_KEY_ALWAYS_PASSES.to_string()
-    } else {
-        config.cf_turnstile_secret_key.to_string()
-    };
-
-    let client = reqwest::Client::new();
-
-    let form = [("secret", secret_key), ("response", token.to_string())];
-
-    let response = ok_or_internal_error!(
-        client.post(TURNSTILE_VERIFY_URL).form(&form).send().await,
-        "Failed to send Turnstile verification request"
-    );
-
-    let turnstile_response = ok_or_internal_error!(
-        response.json::<TurnstileResponse>().await,
-        "Failed to parse Turnstile response"
-    );
-
-    if !turnstile_response.success {
-        log::error!(
-            "Turnstile validation failed with error codes: {:?}",
-            turnstile_response.error_codes
-        );
-        return Err(TURNSTILE_VALIDATION_FAILED_CODE);
-    }
-
-    log::info!("Turnstile token validation successful");
-    Ok(())
-}
-
 /// WebSocket handler that implements a stateful handshake followed by proof verification
 pub async fn handle_ws_upgrade(
     State(config): State<Config>,
@@ -287,6 +247,46 @@ async fn perform_handshake(
 
     // Return the shared secret directly
     Ok(shared_secret)
+}
+
+/// Validates a Cloudflare Turnstile token
+async fn validate_cloudflare_turnstile_token(
+    token: &str,
+    config: &Config,
+) -> Result<(), WsCloseCode> {
+    // In development mode, allow test token with test secret key
+    let secret_key = if matches!(config.environment, Environment::Development)
+        && token == TURNSTILE_TEST_DUMMY_TOKEN
+    {
+        TURNSTILE_TEST_SECRET_KEY_ALWAYS_PASSES.to_string()
+    } else {
+        config.cf_turnstile_secret_key.to_string()
+    };
+
+    let client = reqwest::Client::new();
+
+    let form = [("secret", secret_key), ("response", token.to_string())];
+
+    let response = ok_or_internal_error!(
+        client.post(TURNSTILE_VERIFY_URL).form(&form).send().await,
+        "Failed to send Turnstile verification request"
+    );
+
+    let turnstile_response = ok_or_internal_error!(
+        response.json::<TurnstileResponse>().await,
+        "Failed to parse Turnstile response"
+    );
+
+    if !turnstile_response.success {
+        log::error!(
+            "Turnstile validation failed with error codes: {:?}",
+            turnstile_response.error_codes
+        );
+        return Err(TURNSTILE_VALIDATION_FAILED_CODE);
+    }
+
+    log::info!("Turnstile token validation successful");
+    Ok(())
 }
 
 /// Receives and validates an AES-256-GCM encrypted proof request from the WebSocket
