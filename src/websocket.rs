@@ -177,9 +177,9 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
 /// Performs the initial WebSocket handshake using ML-KEM-768 for post-quantum key exchange
 ///
 /// This function:
-/// 1. Receives an encapsulation key from the client
-/// 2. Validates the key format and size
-/// 3. Validates the Cloudflare Turnstile token
+/// 1. Receives an encapsulation key and turnstile token from the client
+/// 2. Validates the Cloudflare Turnstile token
+/// 3. Validates the key format and size
 /// 4. Generates a shared secret and ciphertext using ML-KEM-768
 /// 5. Sends the ciphertext back to the client
 /// 6. Returns the shared secret for potential future use
@@ -216,7 +216,7 @@ async fn perform_handshake(
     }
 
     // Validate Cloudflare Turnstile token
-    validate_cloudflare_turnstile_token(&handshake_request.cf_turnstile_token, &config).await?;
+    validate_cloudflare_turnstile_token(&handshake_request.cf_turnstile_token, config).await?;
 
     // Check the length of the base64 string before decoding
     if handshake_request.ml_kem_768_encapsulation_key.len()
