@@ -76,7 +76,6 @@ macro_rules! with_timeout {
 #[derive(Serialize, Deserialize)]
 pub struct HandshakeMessage {
     pub ml_kem_768_encapsulation_key: String, // Base64-encoded ML-KEM encapsulation key from client
-    pub cf_turnstile_token: String,           // Cloudflare Turnstile token
 }
 
 /// Response sent by server to acknowledge handshake
@@ -96,9 +95,36 @@ struct TurnstileResponse {
 /// WebSocket handler that implements a stateful handshake followed by proof verification
 pub async fn handle_ws_upgrade(
     State(config): State<Config>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     log::info!("Received WebSocket upgrade request");
+    
+    // Extract and validate Turnstile token from query parameters
+    let turnstile_token = match params.get("turnstile_token") {
+        Some(token) => token,
+        None => {
+            log::error!("Missing turnstile_token query parameter");
+            return axum::http::StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+
+    // Check Turnstile token length
+    if turnstile_token.len() > MAX_TURNSTILE_TOKEN_LENGTH {
+        log::error!(
+            "Turnstile token is too long: {} characters (max allowed: {})",
+            turnstile_token.len(),
+            MAX_TURNSTILE_TOKEN_LENGTH
+        );
+        return axum::http::StatusCode::BAD_REQUEST.into_response();
+    }
+
+    // Validate Cloudflare Turnstile token before upgrading
+    if let Err(_) = validate_cloudflare_turnstile_token(turnstile_token, &config).await {
+        log::error!("Turnstile token validation failed during upgrade");
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
+
     ws.on_upgrade(move |socket| handle_ws_protocol(socket, config))
 }
 
@@ -137,12 +163,11 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
 /// Performs the initial WebSocket handshake using ML-KEM-768 for post-quantum key exchange
 ///
 /// This function:
-/// 1. Receives an encapsulation key and turnstile token from the client
-/// 2. Validates the Cloudflare Turnstile token
-/// 3. Validates the key format and size
-/// 4. Generates a shared secret and ciphertext using ML-KEM-768
-/// 5. Sends the ciphertext back to the client
-/// 6. Returns the shared secret for potential future use
+/// 1. Receives an encapsulation key from the client
+/// 2. Validates the key format and size
+/// 3. Generates a shared secret and ciphertext using ML-KEM-768
+/// 4. Sends the ciphertext back to the client
+/// 5. Returns the shared secret for potential future use
 async fn perform_handshake(
     socket: &mut WebSocket,
     config: &Config,
@@ -165,18 +190,6 @@ async fn perform_handshake(
         serde_json::from_str(&handshake_text),
         "Failed to parse handshake message JSON"
     );
-
-    // Check Turnstile token length
-    if handshake_request.cf_turnstile_token.len() > MAX_TURNSTILE_TOKEN_LENGTH {
-        bad_request!(
-            "Turnstile token is too long: {} characters (max allowed: {})",
-            handshake_request.cf_turnstile_token.len(),
-            MAX_TURNSTILE_TOKEN_LENGTH
-        );
-    }
-
-    // Validate Cloudflare Turnstile token
-    validate_cloudflare_turnstile_token(&handshake_request.cf_turnstile_token, config).await?;
 
     // Check the length of the base64 string before decoding
     if handshake_request.ml_kem_768_encapsulation_key.len()

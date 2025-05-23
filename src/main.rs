@@ -2129,7 +2129,7 @@ mod tests {
             axum::routing::get(websocket::handle_ws_upgrade).with_state(config),
         );
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:8008").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
         // Spawn the WebSocket server
@@ -2141,7 +2141,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Connect to the WebSocket server
-        let ws_url = format!("ws://{addr}/prove");
+        let ws_url = format!("ws://{addr}/prove?turnstile_token=XXXX.DUMMY.TOKEN.XXXX");
         let (ws_stream, _) = connect_async(ws_url)
             .await
             .expect("Failed to connect to WebSocket server");
@@ -2417,43 +2417,74 @@ mod tests {
             _ => panic!("Expected close frame, got something else"),
         }
     }
+
     #[tokio::test]
     #[serial]
-    async fn test_end_to_end_invalid_handshake_turnstile_token() {
+    async fn test_end_to_end_invalid_turnstile_token() {
         // Set up the test servers
-        let mut ws_stream = set_up_end_to_end_test_servers(
+        let _ = set_up_end_to_end_test_servers(
             VALID_BITCOIN_ADDRESS_P2PKH,
             VALID_ML_DSA_44_ADDRESS,
             VALID_SLH_DSA_SHA2_128_ADDRESS,
         )
         .await;
 
-        let mut rng = StdRng::from_entropy();
-        let (_, encapsulation_key) = MlKem768::generate(&mut rng);
+        // Connect to the WebSocket server with invalid turnstile token
+        let ws_url = format!("ws://127.0.0.1:8008/prove?turnstile_token=invalid");
+        let connection_result = connect_async(ws_url).await;
 
-        // Base64 encode the encapsulation key
-        let encap_key_base64 = general_purpose::STANDARD.encode(encapsulation_key.as_bytes());
-
-        // Send incorrect handshake message with invalid public key
-        let handshake_json = format!(
-            r#"{{"ml_kem_768_encapsulation_key":"{encap_key_base64}","cf_turnstile_token":"invalid"}}"#
+        // The connection should fail with an HTTP error due to invalid turnstile token
+        assert!(
+            connection_result.is_err(),
+            "WebSocket connection should fail with invalid turnstile token"
         );
-        ws_stream
-            .send(TungsteniteMessage::Text(handshake_json.into()))
-            .await
-            .unwrap();
 
-        // Expect close frame with POLICY code
-        let response = ws_stream.next().await.unwrap().unwrap();
-        match response {
-            TungsteniteMessage::Close(Some(close_frame)) => {
+        // Verify it's a WebSocket protocol error (which indicates HTTP error during upgrade)
+        let error = connection_result.unwrap_err();
+        match error {
+            tokio_tungstenite::tungstenite::Error::Http(response) => {
                 assert_eq!(
-                    u16::from(close_frame.code),
-                    TURNSTILE_VALIDATION_FAILED_CODE,
-                    "Should close with TURNSTILE_VALIDATION_FAILED_CODE code on invalid turnstile token"
+                    response.status(),
+                    403,
+                    "Should get 403 Forbidden status for invalid turnstile token"
                 );
             }
-            _ => panic!("Expected close frame, got something else"),
+            _ => panic!("Expected HTTP error, got: {:?}", error),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_without_turnstile_token() {
+        // Set up the test servers
+        let _ = set_up_end_to_end_test_servers(
+            VALID_BITCOIN_ADDRESS_P2PKH,
+            VALID_ML_DSA_44_ADDRESS,
+            VALID_SLH_DSA_SHA2_128_ADDRESS,
+        )
+        .await;
+
+        // Connect to the WebSocket server with invalid turnstile token
+        let ws_url = format!("ws://127.0.0.1:8008/prove");
+        let connection_result = connect_async(ws_url).await;
+
+        // The connection should fail with an HTTP error due to invalid turnstile token
+        assert!(
+            connection_result.is_err(),
+            "WebSocket connection should fail with invalid turnstile token"
+        );
+
+        // Verify it's a WebSocket protocol error (which indicates HTTP error during upgrade)
+        let error = connection_result.unwrap_err();
+        match error {
+            tokio_tungstenite::tungstenite::Error::Http(response) => {
+                assert_eq!(
+                    response.status(),
+                    400,
+                    "Should get 400 Bad Request status for invalid turnstile token"
+                );
+            }
+            _ => panic!("Expected HTTP error, got: {:?}", error),
         }
     }
 
