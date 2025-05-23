@@ -7,8 +7,9 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
 };
 use axum::{
-    extract::State,
     extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade, close_code},
+    extract::{Query, State},
+    http::StatusCode as HttpStatusCode,
     response::IntoResponse,
 };
 use base64::{Engine, engine::general_purpose};
@@ -95,17 +96,17 @@ struct TurnstileResponse {
 /// WebSocket handler that implements a stateful handshake followed by proof verification
 pub async fn handle_ws_upgrade(
     State(config): State<Config>,
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     log::info!("Received WebSocket upgrade request");
-    
+
     // Extract and validate Turnstile token from query parameters
-    let turnstile_token = match params.get("turnstile_token") {
+    let turnstile_token = match params.get("cf_turnstile_token") {
         Some(token) => token,
         None => {
             log::error!("Missing turnstile_token query parameter");
-            return axum::http::StatusCode::BAD_REQUEST.into_response();
+            return HttpStatusCode::BAD_REQUEST.into_response();
         }
     };
 
@@ -116,13 +117,13 @@ pub async fn handle_ws_upgrade(
             turnstile_token.len(),
             MAX_TURNSTILE_TOKEN_LENGTH
         );
-        return axum::http::StatusCode::BAD_REQUEST.into_response();
+        return HttpStatusCode::BAD_REQUEST.into_response();
     }
 
     // Validate Cloudflare Turnstile token before upgrading
     if let Err(_) = validate_cloudflare_turnstile_token(turnstile_token, &config).await {
         log::error!("Turnstile token validation failed during upgrade");
-        return axum::http::StatusCode::FORBIDDEN.into_response();
+        return HttpStatusCode::FORBIDDEN.into_response();
     }
 
     ws.on_upgrade(move |socket| handle_ws_protocol(socket, config))
@@ -132,7 +133,7 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
     log::info!("WebSocket connection established");
 
     // Step 1: Perform handshake and get the shared secret
-    let shared_secret = match perform_handshake(&mut socket, &config).await {
+    let shared_secret = match perform_handshake(&mut socket).await {
         Ok(secret) => secret,
         Err(error_code) => {
             send_close_frame(&mut socket, error_code).await;
@@ -168,10 +169,7 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
 /// 3. Generates a shared secret and ciphertext using ML-KEM-768
 /// 4. Sends the ciphertext back to the client
 /// 5. Returns the shared secret for potential future use
-async fn perform_handshake(
-    socket: &mut WebSocket,
-    config: &Config,
-) -> Result<SharedKey<MlKem768>, WsCloseCode> {
+async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>, WsCloseCode> {
     // Wait for message with a timeout
     let receive_result = with_timeout!(HANDSHAKE_TIMEOUT_SECS, socket.recv(), "Handshake message");
 

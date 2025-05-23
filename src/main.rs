@@ -955,10 +955,7 @@ mod tests {
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
     use tower::ServiceExt; // for .oneshot()
-    use websocket::{
-        AES_GCM_NONCE_LENGTH, TURNSTILE_VALIDATION_FAILED_CODE,
-        tests::TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS,
-    };
+    use websocket::{AES_GCM_NONCE_LENGTH, tests::TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS};
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
@@ -2141,7 +2138,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Connect to the WebSocket server
-        let ws_url = format!("ws://{addr}/prove?turnstile_token=XXXX.DUMMY.TOKEN.XXXX");
+        let ws_url = format!("ws://{addr}/prove?cf_turnstile_token=XXXX.DUMMY.TOKEN.XXXX");
         let (ws_stream, _) = connect_async(ws_url)
             .await
             .expect("Failed to connect to WebSocket server");
@@ -2430,7 +2427,7 @@ mod tests {
         .await;
 
         // Connect to the WebSocket server with invalid turnstile token
-        let ws_url = format!("ws://127.0.0.1:8008/prove?turnstile_token=invalid");
+        let ws_url = format!("ws://127.0.0.1:8008/prove?cf_turnstile_token=invalid");
         let connection_result = connect_async(ws_url).await;
 
         // The connection should fail with an HTTP error due to invalid turnstile token
