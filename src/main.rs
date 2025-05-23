@@ -247,6 +247,7 @@ struct Config {
     data_layer_api_key: String,
     version: String,
     environment: Environment,
+    cf_turnstile_secret_key: String,
 }
 
 impl Config {
@@ -306,11 +307,15 @@ impl Config {
             .parse::<Environment>()
             .map_err(|e| format!("Invalid ENVIRONMENT: {e}"))?;
 
+        let cf_turnstile_secret_key = env::var("CF_TURNSTILE_SECRET_KEY")
+            .map_err(|_| "CF_TURNSTILE_SECRET_KEY environment variable not set")?;
+
         Ok(Config {
             data_layer_url,
             data_layer_api_key,
             version,
             environment,
+            cf_turnstile_secret_key,
         })
     }
 }
@@ -950,7 +955,7 @@ mod tests {
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
     use tower::ServiceExt; // for .oneshot()
-    use websocket::AES_GCM_NONCE_LENGTH;
+    use websocket::{AES_GCM_NONCE_LENGTH, tests::TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS};
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
@@ -961,6 +966,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Development,
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         }
     }
 
@@ -1278,6 +1284,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Development,
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
@@ -1310,6 +1317,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Development,
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
@@ -1348,6 +1356,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Production,
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
@@ -2025,6 +2034,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: TEST_VERSION.to_string(),
             environment: Environment::Development,
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         }))
         .await;
         assert_eq!(body["status"], "ok");
@@ -2107,6 +2117,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: TEST_VERSION.to_string(),
             environment: Environment::Development,
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
 
         // Start a WebSocket server with the main WebSocket handler
@@ -2115,7 +2126,7 @@ mod tests {
             axum::routing::get(websocket::handle_ws_upgrade).with_state(config),
         );
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:8008").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
         // Spawn the WebSocket server
@@ -2127,7 +2138,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Connect to the WebSocket server
-        let ws_url = format!("ws://{addr}/prove");
+        let ws_url = format!("ws://{addr}/prove?cf_turnstile_token=XXXX.DUMMY.TOKEN.XXXX");
         let (ws_stream, _) = connect_async(ws_url)
             .await
             .expect("Failed to connect to WebSocket server");
@@ -2146,8 +2157,10 @@ mod tests {
         // Base64 encode the encapsulation key
         let encap_key_base64 = general_purpose::STANDARD.encode(encapsulation_key.as_bytes());
 
-        // Send handshake message with ML-KEM encapsulation key
-        let handshake_json = format!(r#"{{"ml_kem_768_encapsulation_key":"{encap_key_base64}"}}"#);
+        // Send handshake message with ML-KEM encapsulation key and dummy Turnstile token
+        let handshake_json = format!(
+            r#"{{"ml_kem_768_encapsulation_key":"{encap_key_base64}","cf_turnstile_token":"XXXX.DUMMY.TOKEN.XXXX"}}"#
+        );
         ws_stream
             .send(TungsteniteMessage::Text(handshake_json.into()))
             .await
@@ -2399,6 +2412,76 @@ mod tests {
                 );
             }
             _ => panic!("Expected close frame, got something else"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_invalid_turnstile_token() {
+        // Set up the test servers
+        let _ = set_up_end_to_end_test_servers(
+            VALID_BITCOIN_ADDRESS_P2PKH,
+            VALID_ML_DSA_44_ADDRESS,
+            VALID_SLH_DSA_SHA2_128_ADDRESS,
+        )
+        .await;
+
+        // Connect to the WebSocket server with invalid turnstile token
+        let ws_url = "ws://127.0.0.1:8008/prove?cf_turnstile_token=invalid".to_string();
+        let connection_result = connect_async(ws_url).await;
+
+        // The connection should fail with an HTTP error due to invalid turnstile token
+        assert!(
+            connection_result.is_err(),
+            "WebSocket connection should fail with invalid turnstile token"
+        );
+
+        // Verify it's a WebSocket protocol error (which indicates HTTP error during upgrade)
+        let error = connection_result.unwrap_err();
+        match error {
+            tokio_tungstenite::tungstenite::Error::Http(response) => {
+                assert_eq!(
+                    response.status(),
+                    403,
+                    "Should get 403 Forbidden status for invalid turnstile token"
+                );
+            }
+            _ => panic!("Expected HTTP error, got: {error:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_without_turnstile_token() {
+        // Set up the test servers
+        let _ = set_up_end_to_end_test_servers(
+            VALID_BITCOIN_ADDRESS_P2PKH,
+            VALID_ML_DSA_44_ADDRESS,
+            VALID_SLH_DSA_SHA2_128_ADDRESS,
+        )
+        .await;
+
+        // Connect to the WebSocket server with invalid turnstile token
+        let ws_url = "ws://127.0.0.1:8008/prove".to_string();
+        let connection_result = connect_async(ws_url).await;
+
+        // The connection should fail with an HTTP error due to invalid turnstile token
+        assert!(
+            connection_result.is_err(),
+            "WebSocket connection should fail with invalid turnstile token"
+        );
+
+        // Verify it's a WebSocket protocol error (which indicates HTTP error during upgrade)
+        let error = connection_result.unwrap_err();
+        match error {
+            tokio_tungstenite::tungstenite::Error::Http(response) => {
+                assert_eq!(
+                    response.status(),
+                    400,
+                    "Should get 400 Bad Request status for invalid turnstile token"
+                );
+            }
+            _ => panic!("Expected HTTP error, got: {error:?}"),
         }
     }
 
