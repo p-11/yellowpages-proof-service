@@ -44,6 +44,8 @@ const AES_256_KEY_LENGTH: usize = 32; // length in bytes
 
 // Cloudflare Turnstile constants
 const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+// A Turnstile token can have up to 2048 characters: https://developers.cloudflare.com/turnstile/get-started/server-side-validation/
+const MAX_TURNSTILE_TOKEN_LENGTH: usize = 2048;
 // Test secret key that always passes
 const TURNSTILE_TEST_SECRET_KEY_ALWAYS_PASSES: &str = "1x0000000000000000000000000000000AA";
 // Dummy token returned by Cloudflare Turnstile test config
@@ -203,6 +205,15 @@ async fn perform_handshake(
         serde_json::from_str(&handshake_text),
         "Failed to parse handshake message JSON"
     );
+
+    // Check Turnstile token length
+    if handshake_request.cf_turnstile_token.len() > MAX_TURNSTILE_TOKEN_LENGTH {
+        bad_request!(
+            "Turnstile token is too long: {} characters (max allowed: {})",
+            handshake_request.cf_turnstile_token.len(),
+            MAX_TURNSTILE_TOKEN_LENGTH
+        );
+    }
 
     // Validate Cloudflare Turnstile token
     validate_cloudflare_turnstile_token(&handshake_request.cf_turnstile_token, &config).await?;
