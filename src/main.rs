@@ -247,6 +247,7 @@ struct Config {
     data_layer_api_key: String,
     version: String,
     environment: Environment,
+    cf_turnstile_secret_key: String,
 }
 
 impl Config {
@@ -306,11 +307,15 @@ impl Config {
             .parse::<Environment>()
             .map_err(|e| format!("Invalid ENVIRONMENT: {e}"))?;
 
+        let cf_turnstile_secret_key = env::var("CF_TURNSTILE_SECRET_KEY")
+            .map_err(|_| "CF_TURNSTILE_SECRET_KEY environment variable not set")?;
+
         Ok(Config {
             data_layer_url,
             data_layer_api_key,
             version,
             environment,
+            cf_turnstile_secret_key,
         })
     }
 }
@@ -950,7 +955,10 @@ mod tests {
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
     use tower::ServiceExt; // for .oneshot()
-    use websocket::AES_GCM_NONCE_LENGTH;
+    use websocket::{
+        AES_GCM_NONCE_LENGTH, TURNSTILE_VALIDATION_FAILED_CODE,
+        tests::TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS,
+    };
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
@@ -961,6 +969,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Development,
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         }
     }
 
@@ -1278,6 +1287,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Development,
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
@@ -1310,6 +1320,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Development,
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
@@ -1348,6 +1359,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: "1.1.0".to_string(),
             environment: Environment::Production,
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
         let proof_request = ProofRequest {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
@@ -2025,6 +2037,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: TEST_VERSION.to_string(),
             environment: Environment::Development,
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         }))
         .await;
         assert_eq!(body["status"], "ok");
@@ -2107,6 +2120,7 @@ mod tests {
             data_layer_api_key: "mock_api_key".to_string(),
             version: TEST_VERSION.to_string(),
             environment: Environment::Development,
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
 
         // Start a WebSocket server with the main WebSocket handler
@@ -2146,8 +2160,10 @@ mod tests {
         // Base64 encode the encapsulation key
         let encap_key_base64 = general_purpose::STANDARD.encode(encapsulation_key.as_bytes());
 
-        // Send handshake message with ML-KEM encapsulation key
-        let handshake_json = format!(r#"{{"ml_kem_768_encapsulation_key":"{encap_key_base64}"}}"#);
+        // Send handshake message with ML-KEM encapsulation key and dummy Turnstile token
+        let handshake_json = format!(
+            r#"{{"ml_kem_768_encapsulation_key":"{encap_key_base64}","cf_turnstile_token":"XXXX.DUMMY.TOKEN.XXXX"}}"#
+        );
         ws_stream
             .send(TungsteniteMessage::Text(handshake_json.into()))
             .await
@@ -2396,6 +2412,45 @@ mod tests {
                     u16::from(close_frame.code),
                     close_code::POLICY,
                     "Should close with POLICY code on invalid public key"
+                );
+            }
+            _ => panic!("Expected close frame, got something else"),
+        }
+    }
+    #[tokio::test]
+    #[serial]
+    async fn test_end_to_end_invalid_handshake_turnstile_token() {
+        // Set up the test servers
+        let mut ws_stream = set_up_end_to_end_test_servers(
+            VALID_BITCOIN_ADDRESS_P2PKH,
+            VALID_ML_DSA_44_ADDRESS,
+            VALID_SLH_DSA_SHA2_128_ADDRESS,
+        )
+        .await;
+
+        let mut rng = StdRng::from_entropy();
+        let (_, encapsulation_key) = MlKem768::generate(&mut rng);
+
+        // Base64 encode the encapsulation key
+        let encap_key_base64 = general_purpose::STANDARD.encode(encapsulation_key.as_bytes());
+
+        // Send incorrect handshake message with invalid public key
+        let handshake_json = format!(
+            r#"{{"ml_kem_768_encapsulation_key":"{encap_key_base64}","cf_turnstile_token":"invalid"}}"#
+        );
+        ws_stream
+            .send(TungsteniteMessage::Text(handshake_json.into()))
+            .await
+            .unwrap();
+
+        // Expect close frame with POLICY code
+        let response = ws_stream.next().await.unwrap().unwrap();
+        match response {
+            TungsteniteMessage::Close(Some(close_frame)) => {
+                assert_eq!(
+                    u16::from(close_frame.code),
+                    TURNSTILE_VALIDATION_FAILED_CODE,
+                    "Should close with TURNSTILE_VALIDATION_FAILED_CODE code on invalid turnstile token"
                 );
             }
             _ => panic!("Expected close frame, got something else"),
