@@ -34,7 +34,6 @@ const PROOF_REQUEST_TIMEOUT_SECS: u64 = 30; // 30 seconds for proof submission
 
 // Custom close code in the private range 4000-4999
 const TIMEOUT_CLOSE_CODE: u16 = 4000; // Custom code for timeout errors
-pub const TURNSTILE_VALIDATION_FAILED_CODE: u16 = 4001; // Custom code for Turnstile validation failure
 
 // Constants for AES-GCM
 pub const AES_GCM_NONCE_LENGTH: usize = 12; // length in bytes
@@ -121,9 +120,9 @@ pub async fn handle_ws_upgrade(
     }
 
     // Validate Cloudflare Turnstile token before upgrading
-    if let Err(_) = validate_cloudflare_turnstile_token(turnstile_token, &config).await {
+    if let Err(status_code) = validate_cloudflare_turnstile_token(turnstile_token, &config).await {
         log::error!("Turnstile token validation failed during upgrade");
-        return HttpStatusCode::FORBIDDEN.into_response();
+        return status_code.into_response();
     }
 
     ws.on_upgrade(move |socket| handle_ws_protocol(socket, config))
@@ -264,7 +263,7 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
 async fn validate_cloudflare_turnstile_token(
     token: &str,
     config: &Config,
-) -> Result<(), WsCloseCode> {
+) -> Result<(), HttpStatusCode> {
     // In development mode, allow test token with test secret key
     let secret_key = if matches!(config.environment, Environment::Development)
         && token == TURNSTILE_TEST_DUMMY_TOKEN
@@ -278,22 +277,27 @@ async fn validate_cloudflare_turnstile_token(
 
     let form = [("secret", secret_key), ("response", token.to_string())];
 
-    let response = ok_or_internal_error!(
-        client.post(TURNSTILE_VERIFY_URL).form(&form).send().await,
-        "Failed to send Turnstile verification request"
-    );
+    let response = client
+        .post(TURNSTILE_VERIFY_URL)
+        .form(&form)
+        .send()
+        .await
+        .map_err(|_| {
+            log::error!("Failed to send Turnstile verification request");
+            HttpStatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
-    let turnstile_response = ok_or_internal_error!(
-        response.json::<TurnstileResponse>().await,
-        "Failed to parse Turnstile response"
-    );
+    let turnstile_response = response.json::<TurnstileResponse>().await.map_err(|_| {
+        log::error!("Failed to parse Turnstile response");
+        HttpStatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     if !turnstile_response.success {
         log::error!(
             "Turnstile validation failed with error codes: {:?}",
             turnstile_response.error_codes
         );
-        return Err(TURNSTILE_VALIDATION_FAILED_CODE);
+        return Err(HttpStatusCode::FORBIDDEN);
     }
 
     log::info!("Turnstile token validation successful");
@@ -417,8 +421,8 @@ pub mod tests {
         );
         assert_eq!(
             result.unwrap_err(),
-            TURNSTILE_VALIDATION_FAILED_CODE,
-            "Should fail with TURNSTILE_VALIDATION_FAILED_CODE"
+            HttpStatusCode::FORBIDDEN,
+            "Should fail with FORBIDDEN status code"
         );
     }
 
@@ -439,8 +443,8 @@ pub mod tests {
         );
         assert_eq!(
             result.unwrap_err(),
-            TURNSTILE_VALIDATION_FAILED_CODE,
-            "Should fail with TURNSTILE_VALIDATION_FAILED_CODE"
+            HttpStatusCode::FORBIDDEN,
+            "Should fail with FORBIDDEN status code"
         );
     }
 }
