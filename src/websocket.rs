@@ -7,8 +7,9 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
 };
 use axum::{
-    extract::State,
     extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade, close_code},
+    extract::{Query, State},
+    http::StatusCode as HttpStatusCode,
     response::IntoResponse,
 };
 use base64::{Engine, engine::general_purpose};
@@ -33,7 +34,6 @@ const PROOF_REQUEST_TIMEOUT_SECS: u64 = 30; // 30 seconds for proof submission
 
 // Custom close code in the private range 4000-4999
 const TIMEOUT_CLOSE_CODE: u16 = 4000; // Custom code for timeout errors
-pub const TURNSTILE_VALIDATION_FAILED_CODE: u16 = 4001; // Custom code for Turnstile validation failure
 
 // Constants for AES-GCM
 pub const AES_GCM_NONCE_LENGTH: usize = 12; // length in bytes
@@ -76,7 +76,6 @@ macro_rules! with_timeout {
 #[derive(Serialize, Deserialize)]
 pub struct HandshakeMessage {
     pub ml_kem_768_encapsulation_key: String, // Base64-encoded ML-KEM encapsulation key from client
-    pub cf_turnstile_token: String,           // Cloudflare Turnstile token
 }
 
 /// Response sent by server to acknowledge handshake
@@ -96,9 +95,33 @@ struct TurnstileResponse {
 /// WebSocket handler that implements a stateful handshake followed by proof verification
 pub async fn handle_ws_upgrade(
     State(config): State<Config>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     log::info!("Received WebSocket upgrade request");
+
+    // Extract and validate Turnstile token from query parameters
+    let Some(turnstile_token) = params.get("cf_turnstile_token") else {
+        log::error!("Missing turnstile_token query parameter");
+        return HttpStatusCode::BAD_REQUEST.into_response();
+    };
+
+    // Check Turnstile token length
+    if turnstile_token.len() > MAX_TURNSTILE_TOKEN_LENGTH {
+        log::error!(
+            "Turnstile token is too long: {} characters (max allowed: {})",
+            turnstile_token.len(),
+            MAX_TURNSTILE_TOKEN_LENGTH
+        );
+        return HttpStatusCode::BAD_REQUEST.into_response();
+    }
+
+    // Validate Cloudflare Turnstile token before upgrading
+    if let Err(status_code) = validate_cloudflare_turnstile_token(turnstile_token, &config).await {
+        log::error!("Turnstile token validation failed during upgrade");
+        return status_code.into_response();
+    }
+
     ws.on_upgrade(move |socket| handle_ws_protocol(socket, config))
 }
 
@@ -106,7 +129,7 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
     log::info!("WebSocket connection established");
 
     // Step 1: Perform handshake and get the shared secret
-    let shared_secret = match perform_handshake(&mut socket, &config).await {
+    let shared_secret = match perform_handshake(&mut socket).await {
         Ok(secret) => secret,
         Err(error_code) => {
             send_close_frame(&mut socket, error_code).await;
@@ -137,16 +160,12 @@ async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
 /// Performs the initial WebSocket handshake using ML-KEM-768 for post-quantum key exchange
 ///
 /// This function:
-/// 1. Receives an encapsulation key and turnstile token from the client
-/// 2. Validates the Cloudflare Turnstile token
-/// 3. Validates the key format and size
-/// 4. Generates a shared secret and ciphertext using ML-KEM-768
-/// 5. Sends the ciphertext back to the client
-/// 6. Returns the shared secret for potential future use
-async fn perform_handshake(
-    socket: &mut WebSocket,
-    config: &Config,
-) -> Result<SharedKey<MlKem768>, WsCloseCode> {
+/// 1. Receives an encapsulation key from the client
+/// 2. Validates the key format and size
+/// 3. Generates a shared secret and ciphertext using ML-KEM-768
+/// 4. Sends the ciphertext back to the client
+/// 5. Returns the shared secret for potential future use
+async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>, WsCloseCode> {
     // Wait for message with a timeout
     let receive_result = with_timeout!(HANDSHAKE_TIMEOUT_SECS, socket.recv(), "Handshake message");
 
@@ -165,18 +184,6 @@ async fn perform_handshake(
         serde_json::from_str(&handshake_text),
         "Failed to parse handshake message JSON"
     );
-
-    // Check Turnstile token length
-    if handshake_request.cf_turnstile_token.len() > MAX_TURNSTILE_TOKEN_LENGTH {
-        bad_request!(
-            "Turnstile token is too long: {} characters (max allowed: {})",
-            handshake_request.cf_turnstile_token.len(),
-            MAX_TURNSTILE_TOKEN_LENGTH
-        );
-    }
-
-    // Validate Cloudflare Turnstile token
-    validate_cloudflare_turnstile_token(&handshake_request.cf_turnstile_token, config).await?;
 
     // Check the length of the base64 string before decoding
     if handshake_request.ml_kem_768_encapsulation_key.len()
@@ -253,7 +260,7 @@ async fn perform_handshake(
 async fn validate_cloudflare_turnstile_token(
     token: &str,
     config: &Config,
-) -> Result<(), WsCloseCode> {
+) -> Result<(), HttpStatusCode> {
     // In development mode, allow test token with test secret key
     let secret_key = if matches!(config.environment, Environment::Development)
         && token == TURNSTILE_TEST_DUMMY_TOKEN
@@ -267,22 +274,27 @@ async fn validate_cloudflare_turnstile_token(
 
     let form = [("secret", secret_key), ("response", token.to_string())];
 
-    let response = ok_or_internal_error!(
-        client.post(TURNSTILE_VERIFY_URL).form(&form).send().await,
-        "Failed to send Turnstile verification request"
-    );
+    let response = client
+        .post(TURNSTILE_VERIFY_URL)
+        .form(&form)
+        .send()
+        .await
+        .map_err(|_| {
+            log::error!("Failed to send Turnstile verification request");
+            HttpStatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
-    let turnstile_response = ok_or_internal_error!(
-        response.json::<TurnstileResponse>().await,
-        "Failed to parse Turnstile response"
-    );
+    let turnstile_response = response.json::<TurnstileResponse>().await.map_err(|_| {
+        log::error!("Failed to parse Turnstile response");
+        HttpStatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     if !turnstile_response.success {
         log::error!(
             "Turnstile validation failed with error codes: {:?}",
             turnstile_response.error_codes
         );
-        return Err(TURNSTILE_VALIDATION_FAILED_CODE);
+        return Err(HttpStatusCode::FORBIDDEN);
     }
 
     log::info!("Turnstile token validation successful");
@@ -406,8 +418,8 @@ pub mod tests {
         );
         assert_eq!(
             result.unwrap_err(),
-            TURNSTILE_VALIDATION_FAILED_CODE,
-            "Should fail with TURNSTILE_VALIDATION_FAILED_CODE"
+            HttpStatusCode::FORBIDDEN,
+            "Should fail with FORBIDDEN status code"
         );
     }
 
@@ -428,8 +440,8 @@ pub mod tests {
         );
         assert_eq!(
             result.unwrap_err(),
-            TURNSTILE_VALIDATION_FAILED_CODE,
-            "Should fail with TURNSTILE_VALIDATION_FAILED_CODE"
+            HttpStatusCode::FORBIDDEN,
+            "Should fail with FORBIDDEN status code"
         );
     }
 }
