@@ -46,6 +46,8 @@ const AES_256_KEY_LENGTH: usize = 32; // length in bytes
 const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 // Test secret key that always passes
 const TURNSTILE_TEST_SECRET_KEY_ALWAYS_PASSES: &str = "1x0000000000000000000000000000000AA";
+// Dummy token returned by Cloudflare Turnstile test config
+pub const TURNSTILE_TEST_DUMMY_TOKEN: &str = "XXXX.DUMMY.TOKEN.XXXX";
 
 /// Type alias for WebSocket close codes
 pub type WsCloseCode = u16;
@@ -96,7 +98,7 @@ async fn validate_cloudflare_turnstile_token(
 ) -> Result<(), WsCloseCode> {
     // In development mode, allow test token with test secret key
     let secret_key = if matches!(config.environment, Environment::Development)
-        && token == "XXXX.DUMMY.TOKEN.XXXX"
+        && token == TURNSTILE_TEST_DUMMY_TOKEN
     {
         TURNSTILE_TEST_SECRET_KEY_ALWAYS_PASSES.to_string()
     } else {
@@ -369,7 +371,7 @@ pub mod tests {
             cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
 
-        let result = validate_cloudflare_turnstile_token("XXXX.DUMMY.TOKEN.XXXX", &config).await;
+        let result = validate_cloudflare_turnstile_token(TURNSTILE_TEST_DUMMY_TOKEN, &config).await;
         assert!(
             result.is_ok(),
             "Validation should pass in development with dummy token"
@@ -386,7 +388,7 @@ pub mod tests {
             cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
         };
 
-        let result = validate_cloudflare_turnstile_token("XXXX.DUMMY.TOKEN.XXXX", &config).await;
+        let result = validate_cloudflare_turnstile_token(TURNSTILE_TEST_DUMMY_TOKEN, &config).await;
         assert!(
             result.is_err(),
             "Validation should fail in production with dummy token"
