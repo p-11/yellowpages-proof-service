@@ -1,9 +1,13 @@
 mod websocket;
 
 use axum::{
-    error_handling::HandleErrorLayer, extract::{ws::close_code, State}, http::{HeaderValue, Method, StatusCode}, response::{IntoResponse, Response}, routing::get, BoxError, Json, Router
+    BoxError, Json, Router,
+    error_handling::HandleErrorLayer,
+    extract::{State, ws::close_code},
+    http::{HeaderValue, Method, StatusCode},
+    response::{IntoResponse, Response},
+    routing::get,
 };
-use std::net::SocketAddr;
 use axum_helmet::{Helmet, HelmetLayer};
 use base64::{Engine, engine::general_purpose};
 use bitcoin::hashes::{Hash, sha256};
@@ -12,10 +16,6 @@ use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_
 use bitcoin::{Address as BitcoinAddress, Network, address::AddressType};
 use env_logger::Env;
 use log::LevelFilter;
-use std::sync::Arc;
-use tower_governor::{
-    governor::GovernorConfigBuilder, GovernorLayer
-};
 use ml_dsa::{
     EncodedVerifyingKey as MlDsaEncodedVerifyingKey, MlDsa44, Signature as MlDsaSignature,
     VerifyingKey as MlDsaVerifyingKey, signature::Verifier as MlDsaVerifier,
@@ -29,9 +29,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use slh_dsa::{Sha2_128s, Signature as SlhDsaSignature, VerifyingKey as SlhDsaVerifyingKey};
 use std::env;
+use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
-use tower::{ServiceBuilder, load_shed::{LoadShedLayer, error::Overloaded},   buffer::BufferLayer, limit::RateLimitLayer};
+use tower::{
+    ServiceBuilder,
+    buffer::BufferLayer,
+    limit::RateLimitLayer,
+    load_shed::{LoadShedLayer, error::Overloaded},
+};
+use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use websocket::{WsCloseCode, handle_ws_upgrade};
 
@@ -159,6 +167,20 @@ impl FromStr for Environment {
             "development" => Ok(Environment::Development),
             _ => Err("Environment must be `production` or `development`"),
         }
+    }
+}
+
+async fn handle_rate_limit_error(err: BoxError) -> Response {
+    if err.is::<Overloaded>() {
+        // this is our "too many requests" signal
+        (StatusCode::TOO_MANY_REQUESTS, "Rate limit hit").into_response()
+    } else {
+        // some other internal error
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Unhandled error: {err}"),
+        )
+            .into_response()
     }
 }
 
@@ -346,16 +368,6 @@ async fn main() {
     // /prove IP agnostic rate limiter - first line of defense
     // Bot nets etc can easily spin up multiple IPs
     // Limit to 100 requests per 60 seconds for new proofs
-    async fn handle_rate_limit_error(err: BoxError) -> Response {
-        if err.is::<Overloaded>() {
-            // this is our "too many requests" signal
-            (StatusCode::TOO_MANY_REQUESTS, "Rate limit hit").into_response()
-        } else {
-            // some other internal error
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Unhandled error: {}", err))
-                .into_response()
-        }
-    }
     let general_rate_limiter = ServiceBuilder::new()
         // catch both buffer and shed errors
         .layer(HandleErrorLayer::new(handle_rate_limit_error))
@@ -367,7 +379,6 @@ async fn main() {
         // either we are being DDoSed or we found product market fit
         .layer(RateLimitLayer::new(100, Duration::from_secs(60)))
         .into_inner();
-
 
     // /prove IP specific rate limiter
     // Allow bursts with up to 10 requests per IP address
@@ -387,16 +398,16 @@ async fn main() {
     // clean up the storage every 60 seconds
     let interval = Duration::from_secs(60);
     // a separate background task to clean up
-    std::thread::spawn(move || {
+    tokio::spawn(async move {
         loop {
-            std::thread::sleep(interval);
+            tokio::time::sleep(interval).await;
             log::info!("rate limiting storage size: {}", governor_limiter.len());
             governor_limiter.retain_recent();
         }
     });
     let ip_rate_limiter = GovernorLayer {
-               config: governor_conf,
-           };
+        config: governor_conf,
+    };
 
     // build our application with routes and CORS
     let app = Router::new()
@@ -420,7 +431,12 @@ async fn main() {
     };
 
     // into_make_service_with_connect_info is needed to get the IP address of the client
-    if let Err(e) = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await {
+    if let Err(e) = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    {
         log::error!("Error starting server: {e}");
         std::process::exit(1);
     }
