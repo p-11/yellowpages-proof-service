@@ -345,6 +345,8 @@ impl Config {
     }
 }
 
+const GLOBAL_RATE_LIMIT_REQS_PER_MIN: u64 = 1_000; // 1,000 requests per minute
+
 #[tokio::main]
 async fn main() {
     // Parse config from environment
@@ -372,7 +374,7 @@ async fn main() {
 
     // /prove IP agnostic rate limiter - first line of defense
     // Bot nets etc can easily spin up multiple IPs
-    // Limit to 100 requests per 60 seconds for new proofs
+    // Limit to GLOBAL_RATE_LIMIT_REQS_PER_MIN requests per 60 seconds for new proofs
     let general_rate_limiter = ServiceBuilder::new()
         // catch both buffer and shed errors
         .layer(HandleErrorLayer::new(handle_rate_limit_error))
@@ -380,9 +382,11 @@ async fn main() {
         .layer(BufferLayer::new(1024))
         // *this* layer turns "not ready" into Overloaded errors
         .layer(LoadShedLayer::new())
-        // 100 reqs per 60s bucket
         // either we are being DDoSed or we found product market fit
-        .layer(RateLimitLayer::new(100, Duration::from_secs(60)))
+        .layer(RateLimitLayer::new(
+            GLOBAL_RATE_LIMIT_REQS_PER_MIN,
+            Duration::from_secs(60),
+        ))
         .into_inner();
 
     // /prove IP specific rate limiter
