@@ -1,6 +1,6 @@
 use crate::{
-    Config, Environment, ProofRequest, bad_request, internal_error, ok_or_bad_request,
-    ok_or_internal_error, prove,
+    Config, Environment, bad_request, internal_error, ok_or_bad_request, ok_or_internal_error,
+    prove::{ProofRequest, prove},
 };
 use aes_gcm::{
     Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
