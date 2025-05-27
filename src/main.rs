@@ -170,6 +170,7 @@ async fn health(State(config): State<Config>) -> Json<serde_json::Value> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::utils::UploadProofRequest;
     use aes_gcm::{
         Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
         aead::{Aead, KeyInit},
@@ -192,7 +193,7 @@ pub mod tests {
         AddressParams as PqAddressParams, Network as PqNetwork, Version as PqVersion,
         encode_address as pq_encode_address,
     };
-    use prove::{AttestationRequest, ProofRequest, UploadProofRequest, UserData};
+    use prove::{AttestationRequest, ProofRequest, UserData};
     use rand::{RngCore, SeedableRng, rngs::StdRng};
     use serial_test::serial;
     use slh_dsa::{SigningKey as SlhDsaSigningKey, signature::Keypair as SlhDsaKeypair};

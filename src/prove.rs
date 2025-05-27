@@ -1,5 +1,6 @@
 // mod websocket;
 
+use crate::utils::{UploadProofRequest, upload_to_data_layer};
 use crate::{
     bad_request,
     config::{Config, Environment},
@@ -79,15 +80,6 @@ pub struct ProofRequest {
     pub slh_dsa_sha2_s_128_address: String,
     pub slh_dsa_sha2_s_128_public_key: String,
     pub slh_dsa_sha2_s_128_signed_message: String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct UploadProofRequest {
-    pub btc_address: String,
-    pub ml_dsa_44_address: String,
-    pub slh_dsa_sha2_s_128_address: String,
-    pub version: String,
-    pub proof: String,
 }
 
 #[derive(Debug)]
@@ -600,48 +592,6 @@ async fn embed_addresses_in_proof(
 
     // Base64 encode the attestation document
     Ok(general_purpose::STANDARD.encode(attestation_bytes))
-}
-
-async fn upload_to_data_layer(
-    bitcoin_address: &BitcoinAddress,
-    ml_dsa_44_address: &DecodedPqAddress,
-    slh_dsa_sha2_s_128_address: &DecodedPqAddress,
-    attestation_doc_base64: &str,
-    version: &str,
-    data_layer_url: &str,
-    data_layer_api_key: &str,
-) -> Result<(), WsCloseCode> {
-    let client = Client::new();
-
-    let request = UploadProofRequest {
-        btc_address: bitcoin_address.to_string(),
-        ml_dsa_44_address: ml_dsa_44_address.to_string(),
-        slh_dsa_sha2_s_128_address: slh_dsa_sha2_s_128_address.to_string(),
-        version: version.to_string(),
-        proof: attestation_doc_base64.to_string(),
-    };
-
-    // Send request to data layer
-    let response = ok_or_internal_error!(
-        client
-            .post(format!("{data_layer_url}/v1/proofs"))
-            .header("x-api-key", data_layer_api_key)
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await,
-        "Failed to send request to data layer"
-    );
-
-    // Check if the request was successful
-    if !response.status().is_success() {
-        internal_error!(
-            "Data layer returned non-success status: {}",
-            response.status()
-        );
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

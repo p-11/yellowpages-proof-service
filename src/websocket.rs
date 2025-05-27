@@ -3,6 +3,8 @@ use crate::{
     config::{Config, Environment},
     internal_error, ok_or_bad_request, ok_or_internal_error,
     prove::{ProofRequest, prove},
+    utils::{send_close_frame, validate_cloudflare_turnstile_token},
+    with_timeout,
 };
 use aes_gcm::{
     Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
@@ -56,24 +58,6 @@ pub const TURNSTILE_TEST_DUMMY_TOKEN: &str = "XXXX.DUMMY.TOKEN.XXXX";
 /// Type alias for WebSocket close codes
 pub type WsCloseCode = u16;
 
-// Macro to handle WebSocket timeout
-macro_rules! with_timeout {
-    ($timeout_secs:expr, $operation:expr, $timeout_name:expr) => {
-        match timeout(Duration::from_secs($timeout_secs), $operation).await {
-            Ok(result) => result,
-            Err(_) => {
-                // Timeout occurred - protocol violation
-                log::error!(
-                    "{} timed out after {} seconds",
-                    $timeout_name,
-                    $timeout_secs
-                );
-                return Err(TIMEOUT_CLOSE_CODE);
-            }
-        }
-    };
-}
-
 /// Message sent by client to initiate handshake
 #[derive(Serialize, Deserialize)]
 pub struct HandshakeMessage {
@@ -84,14 +68,6 @@ pub struct HandshakeMessage {
 #[derive(Serialize, Deserialize)]
 pub struct HandshakeResponse {
     pub ml_kem_768_ciphertext: String, // Base64-encoded ML-KEM ciphertext
-}
-
-/// Response from Cloudflare Turnstile verification
-#[derive(Deserialize)]
-struct TurnstileResponse {
-    success: bool,
-    #[serde(rename = "error-codes")]
-    error_codes: Vec<String>,
 }
 
 /// WebSocket handler that implements a stateful handshake followed by proof verification
@@ -258,51 +234,6 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
     Ok(shared_secret)
 }
 
-/// Validates a Cloudflare Turnstile token
-async fn validate_cloudflare_turnstile_token(
-    token: &str,
-    config: &Config,
-) -> Result<(), HttpStatusCode> {
-    // In development mode, allow test token with test secret key
-    let secret_key = if matches!(config.environment, Environment::Development)
-        && token == TURNSTILE_TEST_DUMMY_TOKEN
-    {
-        TURNSTILE_TEST_SECRET_KEY_ALWAYS_PASSES.to_string()
-    } else {
-        config.cf_turnstile_secret_key.to_string()
-    };
-
-    let client = reqwest::Client::new();
-
-    let form = [("secret", secret_key), ("response", token.to_string())];
-
-    let response = client
-        .post(TURNSTILE_VERIFY_URL)
-        .form(&form)
-        .send()
-        .await
-        .map_err(|_| {
-            log::error!("Failed to send Turnstile verification request");
-            HttpStatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    let turnstile_response = response.json::<TurnstileResponse>().await.map_err(|_| {
-        log::error!("Failed to parse Turnstile response");
-        HttpStatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    if !turnstile_response.success {
-        log::error!(
-            "Turnstile validation failed with error codes: {:?}",
-            turnstile_response.error_codes
-        );
-        return Err(HttpStatusCode::FORBIDDEN);
-    }
-
-    log::info!("Turnstile token validation successful");
-    Ok(())
-}
-
 /// Receives and validates an AES-256-GCM encrypted proof request from the WebSocket
 async fn receive_proof_request(
     socket: &mut WebSocket,
@@ -364,21 +295,6 @@ async fn receive_proof_request(
     );
 
     Ok(proof_request)
-}
-
-/// Helper function to send a close frame with the given code
-async fn send_close_frame(socket: &mut WebSocket, code: WsCloseCode) {
-    let close_frame = CloseFrame {
-        code,
-        reason: "".into(),
-    };
-
-    // Per WebSocket protocol, we only send a close frame once.
-    // If it fails, we just log the error and continue - there's nothing else we can do.
-    if let Err(error) = socket.send(WsMessage::Close(Some(close_frame))).await {
-        log::error!("Failed to send close frame (code: {code}): {error}");
-    }
-    log::info!("WebSocket connection terminated with code: {code}");
 }
 
 #[cfg(test)]
