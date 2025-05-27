@@ -133,6 +133,7 @@ async fn main() {
 }
 
 /// WebSocket handler that implements a stateful handshake followed by proof verification
+#[allow(clippy::implicit_hasher)]
 pub async fn handle_ws_upgrade(
     State(config): State<Config>,
     Query(params): Query<std::collections::HashMap<String, String>>,
