@@ -1,5 +1,6 @@
 mod config;
 mod prove;
+mod utils;
 mod websocket;
 
 use axum::{
@@ -16,7 +17,7 @@ use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
 use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_msg_hash};
 use bitcoin::{Address as BitcoinAddress, Network, address::AddressType};
-use config::{Config, Environment};
+use config::{Config, Environment, handle_rate_limit_error};
 use env_logger::Env;
 use log::LevelFilter;
 use ml_dsa::{
@@ -45,74 +46,6 @@ use tower::{
 use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use websocket::{WsCloseCode, handle_ws_upgrade};
-
-// Macro to handle the common pattern of error checking
-#[macro_export]
-macro_rules! ok_or_bad_request {
-    ($expr:expr, $err_msg:expr) => {
-        match $expr {
-            Ok(val) => val,
-            Err(e) => {
-                log::error!("{}: {}", $err_msg, e);
-                return Err(close_code::POLICY);
-            }
-        }
-    };
-}
-
-// Macro for simple error logging and returning INVALID code
-#[macro_export]
-macro_rules! bad_request {
-    ($err_msg:expr) => {{
-        log::error!($err_msg);
-        return Err(close_code::POLICY);
-    }};
-    ($fmt:expr, $($arg:tt)*) => {{
-        log::error!($fmt, $($arg)*);
-        return Err(close_code::POLICY);
-    }};
-}
-
-// Macro for simple error logging and returning Internal Error code
-#[macro_export]
-macro_rules! internal_error {
-    ($err_msg:expr) => {{
-        log::error!($err_msg);
-        return Err(close_code::ERROR);
-    }};
-    ($fmt:expr, $($arg:tt)*) => {{
-        log::error!($fmt, $($arg)*);
-        return Err(close_code::ERROR);
-    }};
-}
-
-// Macro for handling Results that should return Internal Error if Err
-#[macro_export]
-macro_rules! ok_or_internal_error {
-    ($expr:expr, $err_msg:expr) => {
-        match $expr {
-            Ok(val) => val,
-            Err(e) => {
-                log::error!("{}: {}", $err_msg, e);
-                return Err(close_code::ERROR);
-            }
-        }
-    };
-}
-
-async fn handle_rate_limit_error(err: BoxError) -> Response {
-    if err.is::<Overloaded>() {
-        // this is our "too many requests" signal
-        (StatusCode::TOO_MANY_REQUESTS, "Rate limit hit").into_response()
-    } else {
-        // some other internal error
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Unhandled error: {err}"),
-        )
-            .into_response()
-    }
-}
 
 const GLOBAL_RATE_LIMIT_REQS_PER_MIN: u64 = 1_000; // 1,000 requests per minute
 

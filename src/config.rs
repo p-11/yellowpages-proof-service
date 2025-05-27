@@ -221,6 +221,20 @@ impl Config {
 
 const GLOBAL_RATE_LIMIT_REQS_PER_MIN: u64 = 1_000; // 1,000 requests per minute
 
+pub async fn handle_rate_limit_error(err: BoxError) -> Response {
+    if err.is::<Overloaded>() {
+        // this is our "too many requests" signal
+        (StatusCode::TOO_MANY_REQUESTS, "Rate limit hit").into_response()
+    } else {
+        // some other internal error
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Unhandled error: {err}"),
+        )
+            .into_response()
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
