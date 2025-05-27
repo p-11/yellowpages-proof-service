@@ -5,7 +5,7 @@ use crate::{
     bad_request,
     config::{Config, Environment},
     internal_error, ok_or_bad_request, ok_or_internal_error,
-    websocket::WsCloseCode,
+    pq_channel::WsCloseCode,
 };
 use axum::{
     BoxError, Json, Router,
@@ -598,7 +598,8 @@ async fn embed_addresses_in_proof(
 mod tests {
     use super::*;
     use crate::config::tests::test_config;
-    use crate::websocket::{AES_GCM_NONCE_LENGTH, tests::TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS};
+    use crate::pq_channel::AES_GCM_NONCE_LENGTH;
+    use crate::utils::tests::TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS;
     use aes_gcm::{
         Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
         aead::{Aead, KeyInit},

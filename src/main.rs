@@ -1,7 +1,7 @@
 mod config;
+mod pq_channel;
 mod prove;
 mod utils;
-mod websocket;
 
 use axum::{
     BoxError, Json, Router,
@@ -28,6 +28,7 @@ use pq_address::{
     DecodedAddress as DecodedPqAddress, Network as PqNetwork, PubKeyType as PqPubKeyType,
     decode_address as decode_pq_address,
 };
+use pq_channel::{WsCloseCode, run_pq_channel_protocol};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -46,7 +47,6 @@ use tower::{
 use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use utils::validate_cloudflare_turnstile_token;
-use websocket::{WsCloseCode, handle_ws_protocol};
 
 const GLOBAL_RATE_LIMIT_REQS_PER_MIN: u64 = 1_000; // 1,000 requests per minute
 // A Turnstile token can have up to 2048 characters: https://developers.cloudflare.com/turnstile/get-started/server-side-validation/
@@ -186,7 +186,7 @@ pub async fn handle_ws_upgrade(
         return status_code.into_response();
     }
 
-    ws.on_upgrade(move |socket| handle_ws_protocol(socket, config))
+    ws.on_upgrade(move |socket| run_pq_channel_protocol(socket, config))
 }
 
 /// Health check endpoint.
@@ -207,6 +207,7 @@ async fn health(State(config): State<Config>) -> Json<serde_json::Value> {
 pub mod tests {
     use super::*;
     use crate::utils::UploadProofRequest;
+    use crate::utils::tests::TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS;
     use aes_gcm::{
         Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
         aead::{Aead, KeyInit},
@@ -229,6 +230,7 @@ pub mod tests {
         AddressParams as PqAddressParams, Network as PqNetwork, Version as PqVersion,
         encode_address as pq_encode_address,
     };
+    use pq_channel::AES_GCM_NONCE_LENGTH;
     use prove::{AttestationRequest, ProofRequest, UserData};
     use rand::{RngCore, SeedableRng, rngs::StdRng};
     use serial_test::serial;
@@ -237,7 +239,6 @@ pub mod tests {
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
     use tower::ServiceExt; // for .oneshot()
-    use websocket::{AES_GCM_NONCE_LENGTH, tests::TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS};
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
@@ -508,7 +509,7 @@ pub mod tests {
         let response = ws_stream.next().await.unwrap().unwrap();
         if let TungsteniteMessage::Text(text) = response {
             // Parse the handshake response
-            let handshake_response: websocket::HandshakeResponse =
+            let handshake_response: pq_channel::HandshakeResponse =
                 serde_json::from_str(&text).expect("Failed to parse handshake response");
 
             // Verify the response contains a ciphertext

@@ -70,7 +70,7 @@ pub struct HandshakeResponse {
     pub ml_kem_768_ciphertext: String, // Base64-encoded ML-KEM ciphertext
 }
 
-pub async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
+pub async fn run_pq_channel_protocol(mut socket: WebSocket, config: Config) {
     log::info!("WebSocket connection established");
 
     // Step 1: Perform handshake and get the shared secret
@@ -262,71 +262,4 @@ async fn receive_proof_request(
     );
 
     Ok(proof_request)
-}
-
-#[cfg(test)]
-pub mod tests {
-    use super::*;
-    pub const TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS: &str = "2x00000000000000000000BB";
-
-    #[tokio::test]
-    async fn test_validate_turnstile_development_dummy_token() {
-        let config = Config {
-            data_layer_url: "http://127.0.0.1:9998".to_string(),
-            data_layer_api_key: "mock_api_key".to_string(),
-            version: "1.1.0".to_string(),
-            environment: Environment::Development,
-            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
-        };
-
-        let result = validate_cloudflare_turnstile_token(TURNSTILE_TEST_DUMMY_TOKEN, &config).await;
-        assert!(
-            result.is_ok(),
-            "Validation should pass in development with dummy token"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_validate_turnstile_production_dummy_token() {
-        let config = Config {
-            data_layer_url: "http://127.0.0.1:9998".to_string(),
-            data_layer_api_key: "mock_api_key".to_string(),
-            version: "1.1.0".to_string(),
-            environment: Environment::Production,
-            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
-        };
-
-        let result = validate_cloudflare_turnstile_token(TURNSTILE_TEST_DUMMY_TOKEN, &config).await;
-        assert!(
-            result.is_err(),
-            "Validation should fail in production with dummy token"
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            HttpStatusCode::FORBIDDEN,
-            "Should fail with FORBIDDEN status code"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_validate_turnstile_production_invalid_token() {
-        let config = Config {
-            data_layer_url: "http://127.0.0.1:9998".to_string(),
-            data_layer_api_key: "mock_api_key".to_string(),
-            version: "1.1.0".to_string(),
-            environment: Environment::Production,
-            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
-        };
-
-        let result = validate_cloudflare_turnstile_token("invalid.token.here", &config).await;
-        assert!(
-            result.is_err(),
-            "Validation should fail in production with invalid token"
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            HttpStatusCode::FORBIDDEN,
-            "Should fail with FORBIDDEN status code"
-        );
-    }
 }

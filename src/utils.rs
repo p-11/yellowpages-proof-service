@@ -1,5 +1,5 @@
 use crate::config::{Config, Environment};
-use crate::websocket::WsCloseCode;
+use crate::pq_channel::WsCloseCode;
 use axum::{
     BoxError, Json, Router,
     error_handling::HandleErrorLayer,
@@ -243,4 +243,71 @@ pub async fn send_close_frame(socket: &mut WebSocket, code: WsCloseCode) {
         log::error!("Failed to send close frame (code: {code}): {error}");
     }
     log::info!("WebSocket connection terminated with code: {code}");
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+    pub const TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS: &str = "2x00000000000000000000BB";
+
+    #[tokio::test]
+    async fn test_validate_turnstile_development_dummy_token() {
+        let config = Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: "1.1.0".to_string(),
+            environment: Environment::Development,
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
+        };
+
+        let result = validate_cloudflare_turnstile_token(TURNSTILE_TEST_DUMMY_TOKEN, &config).await;
+        assert!(
+            result.is_ok(),
+            "Validation should pass in development with dummy token"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_turnstile_production_dummy_token() {
+        let config = Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: "1.1.0".to_string(),
+            environment: Environment::Production,
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
+        };
+
+        let result = validate_cloudflare_turnstile_token(TURNSTILE_TEST_DUMMY_TOKEN, &config).await;
+        assert!(
+            result.is_err(),
+            "Validation should fail in production with dummy token"
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            HttpStatusCode::FORBIDDEN,
+            "Should fail with FORBIDDEN status code"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_turnstile_production_invalid_token() {
+        let config = Config {
+            data_layer_url: "http://127.0.0.1:9998".to_string(),
+            data_layer_api_key: "mock_api_key".to_string(),
+            version: "1.1.0".to_string(),
+            environment: Environment::Production,
+            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
+        };
+
+        let result = validate_cloudflare_turnstile_token("invalid.token.here", &config).await;
+        assert!(
+            result.is_err(),
+            "Validation should fail in production with invalid token"
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            HttpStatusCode::FORBIDDEN,
+            "Should fail with FORBIDDEN status code"
+        );
+    }
 }

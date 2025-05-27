@@ -1,4 +1,4 @@
-use crate::websocket::WsCloseCode;
+use crate::pq_channel::WsCloseCode;
 use axum::{
     BoxError, Json, Router,
     error_handling::HandleErrorLayer,
@@ -238,9 +238,10 @@ pub async fn handle_rate_limit_error(err: BoxError) -> Response {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::pq_channel::AES_GCM_NONCE_LENGTH;
     use crate::prove::{AttestationRequest, ProofRequest, UserData};
     use crate::utils::UploadProofRequest;
-    use crate::websocket::{AES_GCM_NONCE_LENGTH, tests::TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS};
+    use crate::utils::tests::TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS;
     use aes_gcm::{
         Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
         aead::{Aead, KeyInit},
