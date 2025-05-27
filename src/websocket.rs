@@ -70,40 +70,7 @@ pub struct HandshakeResponse {
     pub ml_kem_768_ciphertext: String, // Base64-encoded ML-KEM ciphertext
 }
 
-/// WebSocket handler that implements a stateful handshake followed by proof verification
-pub async fn handle_ws_upgrade(
-    State(config): State<Config>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
-    ws: WebSocketUpgrade,
-) -> impl IntoResponse {
-    log::info!("Received WebSocket upgrade request");
-
-    // Extract and validate Turnstile token from query parameters
-    let Some(turnstile_token) = params.get("cf_turnstile_token") else {
-        log::error!("Missing turnstile_token query parameter");
-        return HttpStatusCode::BAD_REQUEST.into_response();
-    };
-
-    // Check Turnstile token length
-    if turnstile_token.len() > MAX_TURNSTILE_TOKEN_LENGTH {
-        log::error!(
-            "Turnstile token is too long: {} characters (max allowed: {})",
-            turnstile_token.len(),
-            MAX_TURNSTILE_TOKEN_LENGTH
-        );
-        return HttpStatusCode::BAD_REQUEST.into_response();
-    }
-
-    // Validate Cloudflare Turnstile token before upgrading
-    if let Err(status_code) = validate_cloudflare_turnstile_token(turnstile_token, &config).await {
-        log::error!("Turnstile token validation failed during upgrade");
-        return status_code.into_response();
-    }
-
-    ws.on_upgrade(move |socket| handle_ws_protocol(socket, config))
-}
-
-async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
+pub async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
     log::info!("WebSocket connection established");
 
     // Step 1: Perform handshake and get the shared secret

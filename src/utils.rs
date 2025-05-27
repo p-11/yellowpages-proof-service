@@ -1,5 +1,5 @@
 use crate::config::{Config, Environment};
-use crate::websocket::{WsCloseCode, handle_ws_upgrade};
+use crate::websocket::WsCloseCode;
 use axum::{
     BoxError, Json, Router,
     error_handling::HandleErrorLayer,

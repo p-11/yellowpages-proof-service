@@ -6,8 +6,8 @@ mod websocket;
 use axum::{
     BoxError, Json, Router,
     error_handling::HandleErrorLayer,
-    extract::{State, ws::close_code},
-    http::{HeaderValue, Method, StatusCode},
+    extract::{Query, State, WebSocketUpgrade, ws::close_code},
+    http::{HeaderValue, Method, StatusCode as HttpStatusCode},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -45,9 +45,12 @@ use tower::{
 };
 use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use tower_http::cors::{AllowOrigin, CorsLayer};
-use websocket::{WsCloseCode, handle_ws_upgrade};
+use utils::validate_cloudflare_turnstile_token;
+use websocket::{WsCloseCode, handle_ws_protocol};
 
 const GLOBAL_RATE_LIMIT_REQS_PER_MIN: u64 = 1_000; // 1,000 requests per minute
+// A Turnstile token can have up to 2048 characters: https://developers.cloudflare.com/turnstile/get-started/server-side-validation/
+const MAX_TURNSTILE_TOKEN_LENGTH: usize = 2048;
 
 #[tokio::main]
 async fn main() {
@@ -151,6 +154,39 @@ async fn main() {
         log::error!("Error starting server: {e}");
         std::process::exit(1);
     }
+}
+
+/// WebSocket handler that implements a stateful handshake followed by proof verification
+pub async fn handle_ws_upgrade(
+    State(config): State<Config>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    log::info!("Received WebSocket upgrade request");
+
+    // Extract and validate Turnstile token from query parameters
+    let Some(turnstile_token) = params.get("cf_turnstile_token") else {
+        log::error!("Missing turnstile_token query parameter");
+        return HttpStatusCode::BAD_REQUEST.into_response();
+    };
+
+    // Check Turnstile token length
+    if turnstile_token.len() > MAX_TURNSTILE_TOKEN_LENGTH {
+        log::error!(
+            "Turnstile token is too long: {} characters (max allowed: {})",
+            turnstile_token.len(),
+            MAX_TURNSTILE_TOKEN_LENGTH
+        );
+        return HttpStatusCode::BAD_REQUEST.into_response();
+    }
+
+    // Validate Cloudflare Turnstile token before upgrading
+    if let Err(status_code) = validate_cloudflare_turnstile_token(turnstile_token, &config).await {
+        log::error!("Turnstile token validation failed during upgrade");
+        return status_code.into_response();
+    }
+
+    ws.on_upgrade(move |socket| handle_ws_protocol(socket, config))
 }
 
 /// Health check endpoint.
@@ -425,7 +461,7 @@ pub mod tests {
         // Start a WebSocket server with the main WebSocket handler
         let app = Router::new().route(
             "/prove",
-            axum::routing::get(websocket::handle_ws_upgrade).with_state(config),
+            axum::routing::get(crate::handle_ws_upgrade).with_state(config),
         );
 
         let listener = TcpListener::bind("127.0.0.1:8008").await.unwrap();

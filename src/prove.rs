@@ -5,7 +5,7 @@ use crate::{
     bad_request,
     config::{Config, Environment},
     internal_error, ok_or_bad_request, ok_or_internal_error,
-    websocket::{WsCloseCode, handle_ws_upgrade},
+    websocket::WsCloseCode,
 };
 use axum::{
     BoxError, Json, Router,
