@@ -1,18 +1,17 @@
 use crate::{
-    Config, Environment, ProofRequest, bad_request, internal_error, ok_or_bad_request,
-    ok_or_internal_error, prove,
+    bad_request,
+    config::Config,
+    internal_error, ok_or_bad_request, ok_or_internal_error,
+    prove::{ProofRequest, prove},
+    utils::send_close_frame,
+    with_timeout,
 };
 use aes_gcm::{
     Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
     aead::{Aead, KeyInit},
 };
-use axum::{
-    extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade, close_code},
-    extract::{Query, State},
-    http::StatusCode as HttpStatusCode,
-    response::IntoResponse,
-};
-use base64::{Engine, engine::general_purpose};
+use axum::extract::ws::{Message as WsMessage, WebSocket, close_code};
+use base64::{Engine, engine::general_purpose::STANDARD as base64};
 use ml_kem::{
     Ciphertext, Encoded, EncodedSizeUser, MlKem768, MlKem768Params, SharedKey,
     kem::{Encapsulate, EncapsulationKey},
@@ -42,35 +41,8 @@ pub const AES_GCM_NONCE_LENGTH: usize = 12; // length in bytes
 const MAX_ENCRYPTED_PROOF_REQUEST_LENGTH: usize = 16500;
 const AES_256_KEY_LENGTH: usize = 32; // length in bytes
 
-// Cloudflare Turnstile constants
-const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
-// A Turnstile token can have up to 2048 characters: https://developers.cloudflare.com/turnstile/get-started/server-side-validation/
-const MAX_TURNSTILE_TOKEN_LENGTH: usize = 2048;
-// Test secret key that always passes
-const TURNSTILE_TEST_SECRET_KEY_ALWAYS_PASSES: &str = "1x0000000000000000000000000000000AA";
-// Dummy token returned by Cloudflare Turnstile test config
-pub const TURNSTILE_TEST_DUMMY_TOKEN: &str = "XXXX.DUMMY.TOKEN.XXXX";
-
 /// Type alias for WebSocket close codes
 pub type WsCloseCode = u16;
-
-// Macro to handle WebSocket timeout
-macro_rules! with_timeout {
-    ($timeout_secs:expr, $operation:expr, $timeout_name:expr) => {
-        match timeout(Duration::from_secs($timeout_secs), $operation).await {
-            Ok(result) => result,
-            Err(_) => {
-                // Timeout occurred - protocol violation
-                log::error!(
-                    "{} timed out after {} seconds",
-                    $timeout_name,
-                    $timeout_secs
-                );
-                return Err(TIMEOUT_CLOSE_CODE);
-            }
-        }
-    };
-}
 
 /// Message sent by client to initiate handshake
 #[derive(Serialize, Deserialize)]
@@ -84,48 +56,7 @@ pub struct HandshakeResponse {
     pub ml_kem_768_ciphertext: String, // Base64-encoded ML-KEM ciphertext
 }
 
-/// Response from Cloudflare Turnstile verification
-#[derive(Deserialize)]
-struct TurnstileResponse {
-    success: bool,
-    #[serde(rename = "error-codes")]
-    error_codes: Vec<String>,
-}
-
-/// WebSocket handler that implements a stateful handshake followed by proof verification
-pub async fn handle_ws_upgrade(
-    State(config): State<Config>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
-    ws: WebSocketUpgrade,
-) -> impl IntoResponse {
-    log::info!("Received WebSocket upgrade request");
-
-    // Extract and validate Turnstile token from query parameters
-    let Some(turnstile_token) = params.get("cf_turnstile_token") else {
-        log::error!("Missing turnstile_token query parameter");
-        return HttpStatusCode::BAD_REQUEST.into_response();
-    };
-
-    // Check Turnstile token length
-    if turnstile_token.len() > MAX_TURNSTILE_TOKEN_LENGTH {
-        log::error!(
-            "Turnstile token is too long: {} characters (max allowed: {})",
-            turnstile_token.len(),
-            MAX_TURNSTILE_TOKEN_LENGTH
-        );
-        return HttpStatusCode::BAD_REQUEST.into_response();
-    }
-
-    // Validate Cloudflare Turnstile token before upgrading
-    if let Err(status_code) = validate_cloudflare_turnstile_token(turnstile_token, &config).await {
-        log::error!("Turnstile token validation failed during upgrade");
-        return status_code.into_response();
-    }
-
-    ws.on_upgrade(move |socket| handle_ws_protocol(socket, config))
-}
-
-async fn handle_ws_protocol(mut socket: WebSocket, config: Config) {
+pub async fn run_pq_channel_protocol(mut socket: WebSocket, config: Config) {
     log::info!("WebSocket connection established");
 
     // Step 1: Perform handshake and get the shared secret
@@ -198,7 +129,7 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
 
     // Decode the base64 encapsulation key from the client
     let encapsulation_key_bytes = ok_or_bad_request!(
-        general_purpose::STANDARD.decode(&handshake_request.ml_kem_768_encapsulation_key),
+        base64.decode(&handshake_request.ml_kem_768_encapsulation_key),
         "Failed to decode base64 encapsulation key"
     );
 
@@ -233,7 +164,7 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
     };
 
     // Encode the ciphertext to base64
-    let ciphertext_base64 = general_purpose::STANDARD.encode(ciphertext);
+    let ciphertext_base64 = base64.encode(ciphertext);
 
     // Create and send the response
     let handshake_response = HandshakeResponse {
@@ -254,51 +185,6 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
 
     // Return the shared secret directly
     Ok(shared_secret)
-}
-
-/// Validates a Cloudflare Turnstile token
-async fn validate_cloudflare_turnstile_token(
-    token: &str,
-    config: &Config,
-) -> Result<(), HttpStatusCode> {
-    // In development mode, allow test token with test secret key
-    let secret_key = if matches!(config.environment, Environment::Development)
-        && token == TURNSTILE_TEST_DUMMY_TOKEN
-    {
-        TURNSTILE_TEST_SECRET_KEY_ALWAYS_PASSES.to_string()
-    } else {
-        config.cf_turnstile_secret_key.to_string()
-    };
-
-    let client = reqwest::Client::new();
-
-    let form = [("secret", secret_key), ("response", token.to_string())];
-
-    let response = client
-        .post(TURNSTILE_VERIFY_URL)
-        .form(&form)
-        .send()
-        .await
-        .map_err(|_| {
-            log::error!("Failed to send Turnstile verification request");
-            HttpStatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    let turnstile_response = response.json::<TurnstileResponse>().await.map_err(|_| {
-        log::error!("Failed to parse Turnstile response");
-        HttpStatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    if !turnstile_response.success {
-        log::error!(
-            "Turnstile validation failed with error codes: {:?}",
-            turnstile_response.error_codes
-        );
-        return Err(HttpStatusCode::FORBIDDEN);
-    }
-
-    log::info!("Turnstile token validation successful");
-    Ok(())
 }
 
 /// Receives and validates an AES-256-GCM encrypted proof request from the WebSocket
@@ -362,86 +248,4 @@ async fn receive_proof_request(
     );
 
     Ok(proof_request)
-}
-
-/// Helper function to send a close frame with the given code
-async fn send_close_frame(socket: &mut WebSocket, code: WsCloseCode) {
-    let close_frame = CloseFrame {
-        code,
-        reason: "".into(),
-    };
-
-    // Per WebSocket protocol, we only send a close frame once.
-    // If it fails, we just log the error and continue - there's nothing else we can do.
-    if let Err(error) = socket.send(WsMessage::Close(Some(close_frame))).await {
-        log::error!("Failed to send close frame (code: {code}): {error}");
-    }
-    log::info!("WebSocket connection terminated with code: {code}");
-}
-
-#[cfg(test)]
-pub mod tests {
-    use super::*;
-    pub const TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS: &str = "2x00000000000000000000BB";
-
-    #[tokio::test]
-    async fn test_validate_turnstile_development_dummy_token() {
-        let config = Config {
-            data_layer_url: "http://127.0.0.1:9998".to_string(),
-            data_layer_api_key: "mock_api_key".to_string(),
-            version: "1.1.0".to_string(),
-            environment: Environment::Development,
-            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
-        };
-
-        let result = validate_cloudflare_turnstile_token(TURNSTILE_TEST_DUMMY_TOKEN, &config).await;
-        assert!(
-            result.is_ok(),
-            "Validation should pass in development with dummy token"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_validate_turnstile_production_dummy_token() {
-        let config = Config {
-            data_layer_url: "http://127.0.0.1:9998".to_string(),
-            data_layer_api_key: "mock_api_key".to_string(),
-            version: "1.1.0".to_string(),
-            environment: Environment::Production,
-            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
-        };
-
-        let result = validate_cloudflare_turnstile_token(TURNSTILE_TEST_DUMMY_TOKEN, &config).await;
-        assert!(
-            result.is_err(),
-            "Validation should fail in production with dummy token"
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            HttpStatusCode::FORBIDDEN,
-            "Should fail with FORBIDDEN status code"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_validate_turnstile_production_invalid_token() {
-        let config = Config {
-            data_layer_url: "http://127.0.0.1:9998".to_string(),
-            data_layer_api_key: "mock_api_key".to_string(),
-            version: "1.1.0".to_string(),
-            environment: Environment::Production,
-            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
-        };
-
-        let result = validate_cloudflare_turnstile_token("invalid.token.here", &config).await;
-        assert!(
-            result.is_err(),
-            "Validation should fail in production with invalid token"
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            HttpStatusCode::FORBIDDEN,
-            "Should fail with FORBIDDEN status code"
-        );
-    }
 }
