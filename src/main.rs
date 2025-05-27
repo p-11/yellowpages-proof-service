@@ -1,3 +1,4 @@
+mod config;
 mod prove;
 mod websocket;
 
@@ -15,6 +16,7 @@ use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
 use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_msg_hash};
 use bitcoin::{Address as BitcoinAddress, Network, address::AddressType};
+use config::{Config, Environment};
 use env_logger::Env;
 use log::LevelFilter;
 use ml_dsa::{
@@ -98,23 +100,6 @@ macro_rules! ok_or_internal_error {
     };
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Environment {
-    Production,
-    Development,
-}
-
-impl FromStr for Environment {
-    type Err = &'static str;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "production" => Ok(Environment::Production),
-            "development" => Ok(Environment::Development),
-            _ => Err("Environment must be `production` or `development`"),
-        }
-    }
-}
-
 async fn handle_rate_limit_error(err: BoxError) -> Response {
     if err.is::<Overloaded>() {
         // this is our "too many requests" signal
@@ -126,167 +111,6 @@ async fn handle_rate_limit_error(err: BoxError) -> Response {
             format!("Unhandled error: {err}"),
         )
             .into_response()
-    }
-}
-
-impl Environment {
-    /// Given an Environment, what `PqNetwork` should we be on?
-    fn expected_pq_address_network(&self) -> PqNetwork {
-        match self {
-            Environment::Production => PqNetwork::Mainnet,
-            Environment::Development => PqNetwork::Testnet,
-        }
-    }
-
-    /// Configure CORS for the given environment.
-    ///
-    /// This function sets up the CORS layer with allowed methods and origins based on the environment.
-    ///
-    /// # Returns
-    /// - `Result<CorsLayer, String>`: A result containing the configured CORS layer or an error message.
-    ///
-    /// # Errors
-    ///
-    /// If the CORS configuration fails, an error message is returned.
-    fn cors_layer(&self) -> Result<CorsLayer, String> {
-        // Allowed Methods
-        let methods = [Method::GET];
-        // Allowed Origins
-        let origin_cfg = match self {
-            Environment::Development => {
-                let dev_allowed = [
-                    "http://localhost:3000",
-                    "https://yellowpages-development.xyz",
-                    "https://www.yellowpages-development.xyz",
-                ]
-                .map(|s| {
-                    HeaderValue::from_str(s).map_err(|e| format!("Invalid CORS origin `{s}`: {e}"))
-                })
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()?;
-                // build a single matcher that first checks exact list,
-                // then falls back to the "yellowpages-client*.vercel.app" rule:
-                AllowOrigin::predicate(move |hv, _| {
-                    if dev_allowed.iter().any(|u| u.as_bytes() == hv.as_bytes()) {
-                        true
-                    } else {
-                        let s = hv.to_str().unwrap_or("");
-                        s.starts_with("https://yellowpages-client") && s.ends_with(".vercel.app")
-                    }
-                })
-            }
-            Environment::Production => {
-                // only these two in prod
-                let prod_allowed = ["https://www.yellowpages.xyz", "https://yellowpages.xyz"]
-                    .map(|s| {
-                        HeaderValue::from_str(s)
-                            .map_err(|e| format!("Invalid CORS origin `{s}`: {e}"))
-                    })
-                    .into_iter()
-                    .collect::<Result<Vec<_>, _>>()?;
-                AllowOrigin::list(prod_allowed)
-            }
-        };
-
-        Ok(CorsLayer::new()
-            .allow_methods(methods)
-            .allow_origin(origin_cfg))
-    }
-
-    /// Set up logging based on the environment.
-    ///
-    /// This function initializes the logger with different log levels based on the environment.
-    fn setup_logging(&self) {
-        let mut builder = match self {
-            Environment::Production => {
-                let mut b = env_logger::Builder::new();
-                b.filter_level(LevelFilter::Off);
-                b
-            }
-            Environment::Development => {
-                env_logger::Builder::from_env(Env::default().default_filter_or("debug"))
-            }
-        };
-        builder.init();
-    }
-}
-
-#[derive(Clone)]
-pub struct Config {
-    data_layer_url: String,
-    data_layer_api_key: String,
-    version: String,
-    environment: Environment,
-    cf_turnstile_secret_key: String,
-}
-
-impl Config {
-    // Basic sanity check to catch mis-entered version strings in env vars.
-    // This is not a comprehensive semver validation.
-    fn sanity_check_semver(version: &str) -> Result<(), String> {
-        let parts: Vec<&str> = version.split('.').collect();
-        if parts.len() != 3 {
-            return Err("Version must be in format x.y.z".to_string());
-        }
-        Ok(())
-    }
-
-    // Basic sanity check to catch mis-entered URLs in env vars.
-    // This is not a comprehensive URL validation.
-    fn sanity_check_url(url: &str) -> Result<(), String> {
-        #[cfg(test)]
-        {
-            if !url.starts_with("http://") {
-                return Err("URL starts with http:// in test".to_string());
-            }
-        }
-
-        #[cfg(not(test))]
-        {
-            if !url.starts_with("https://") {
-                return Err("URL must start with https://".to_string());
-            }
-        }
-
-        Ok(())
-    }
-
-    // Basic sanity check to catch empty API keys in env vars.
-    fn sanity_check_api_key(key: &str) -> Result<(), String> {
-        if key.is_empty() {
-            return Err("API key cannot be empty".to_string());
-        }
-        Ok(())
-    }
-
-    fn from_env() -> Result<Self, String> {
-        let data_layer_url = env::var("YP_DS_API_BASE_URL")
-            .map_err(|_| "YP_DS_API_BASE_URL environment variable not set")?;
-        Self::sanity_check_url(&data_layer_url)?;
-
-        let data_layer_api_key =
-            env::var("YP_DS_API_KEY").map_err(|_| "YP_DS_API_KEY environment variable not set")?;
-        Self::sanity_check_api_key(&data_layer_api_key)?;
-
-        let version = env::var("VERSION").map_err(|_| "VERSION environment variable not set")?;
-        Self::sanity_check_semver(&version)?;
-
-        let env_str =
-            env::var("ENVIRONMENT").map_err(|_| "ENVIRONMENT environment variable not set")?;
-        let environment = env_str
-            .parse::<Environment>()
-            .map_err(|e| format!("Invalid ENVIRONMENT: {e}"))?;
-
-        let cf_turnstile_secret_key = env::var("CF_TURNSTILE_SECRET_KEY")
-            .map_err(|_| "CF_TURNSTILE_SECRET_KEY environment variable not set")?;
-
-        Ok(Config {
-            data_layer_url,
-            data_layer_api_key,
-            version,
-            environment,
-            cf_turnstile_secret_key,
-        })
     }
 }
 
@@ -427,6 +251,7 @@ pub mod tests {
         response::IntoResponse,
         routing::post,
     };
+    use config::tests::test_config;
     use futures_util::{SinkExt, StreamExt};
     use ml_dsa::{KeyGen, signature::Signer};
     use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, SharedKey, kem::Decapsulate};
@@ -446,16 +271,6 @@ pub mod tests {
 
     // Add a constant for our mock attestation document
     const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
-
-    pub fn test_config() -> Config {
-        Config {
-            data_layer_url: "http://127.0.0.1:9998".to_string(),
-            data_layer_api_key: "mock_api_key".to_string(),
-            version: "1.1.0".to_string(),
-            environment: Environment::Development,
-            cf_turnstile_secret_key: TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS.to_string(),
-        }
-    }
 
     // Mock handler for attestation requests
     #[allow(clippy::needless_pass_by_value)]
@@ -570,200 +385,6 @@ pub mod tests {
 
     const VALID_SLH_DSA_SHA2_128_SIGNATURE_P2WPKH: &str = "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";
 
-    /// Spin up a 1-route app with the CORS layer.
-    fn setup_app(env: &Environment) -> Router {
-        let cors = env.cors_layer().expect("bad CORS config");
-        let helmet = HelmetLayer::new(Helmet::default());
-        Router::new()
-            .route("/", get(|| async { "ok" }))
-            .layer(cors)
-            .layer(helmet)
-    }
-
-    /// Fire a GET / with the given Origin, return the response headers.
-    async fn send_req(app: &Router, origin: &str) -> HeaderMap {
-        let req = Request::builder()
-            .method("GET")
-            .uri("/")
-            .header(header::ORIGIN, origin)
-            .body(Body::empty())
-            .unwrap();
-        app.clone().oneshot(req).await.unwrap().headers().clone()
-    }
-
-    #[tokio::test]
-    async fn dev_allows_exact_listed_domains() {
-        let app = setup_app(&Environment::Development);
-        for origin in &[
-            "http://localhost:3000",
-            "https://yellowpages-development.xyz",
-            "https://www.yellowpages-development.xyz",
-        ] {
-            let headers = send_req(&app, origin).await;
-            assert_eq!(
-                headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
-                *origin,
-                "Expected dev to allow {origin}",
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn dev_allows_vercel_preview_predicate() {
-        let app = setup_app(&Environment::Development);
-        // must start with exactly "https://yellowpages-client" and end with ".vercel.app"
-        let origin = "https://yellowpages-client123.vercel.app";
-        let headers = send_req(&app, origin).await;
-        assert_eq!(
-            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
-            origin,
-            "Expected dev to allow Vercel preview with yellowpages-client prefix"
-        );
-    }
-
-    #[tokio::test]
-    async fn dev_rejects_non_yellowpages_vercel_preview() {
-        let app = setup_app(&Environment::Development);
-        // wrong prefix for predicate
-        let origin = "https://foo.vercel.app";
-        let headers = send_req(&app, origin).await;
-        assert!(
-            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
-            "Dev should reject Vercel preview without yellowpages-client prefix"
-        );
-    }
-
-    #[tokio::test]
-    async fn dev_rejects_prod_domains() {
-        let app = setup_app(&Environment::Development);
-        for origin in &["https://www.yellowpages.xyz", "https://yellowpages.xyz"] {
-            let headers = send_req(&app, origin).await;
-            assert!(
-                headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
-                "Expected dev to reject prod {origin}",
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn dev_rejects_evil_domain() {
-        let app = setup_app(&Environment::Development);
-        let headers = send_req(&app, "https://evil.com").await;
-        assert!(
-            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
-            "Dev should reject evil.com"
-        );
-    }
-
-    #[tokio::test]
-    async fn prod_allows_both_www_and_non_www() {
-        let app = setup_app(&Environment::Production);
-        for origin in &["https://www.yellowpages.xyz", "https://yellowpages.xyz"] {
-            let headers = send_req(&app, origin).await;
-            assert_eq!(
-                headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
-                *origin,
-                "Expected prod to allow {origin}",
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn prod_rejects_dev_domains() {
-        let app = setup_app(&Environment::Production);
-        for origin in &[
-            "http://localhost:3000",
-            "https://yellowpages-development.xyz",
-            "https://www.yellowpages-development.xyz",
-        ] {
-            let headers = send_req(&app, origin).await;
-            assert!(
-                headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
-                "Expected prod to reject dev {origin}",
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn prod_rejects_evil_domain() {
-        let app = setup_app(&Environment::Production);
-        let headers = send_req(&app, "https://evil.com").await;
-        assert!(
-            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
-            "Prod should reject evil.com"
-        );
-    }
-
-    #[tokio::test]
-    async fn helmet_sets_default_security_headers() {
-        let app = setup_app(&Environment::Development);
-        let origin = "https://yellowpages-development.xyz";
-        let headers = send_req(&app, origin).await;
-        assert_eq!(
-            headers.get("content-security-policy").unwrap(),
-            "default-src 'self'; base-uri 'self'; font-src 'self' https: data:; \
-             form-action 'self'; frame-ancestors 'self'; img-src 'self' data:; \
-             object-src 'none'; script-src 'self'; script-src-attr 'none'; \
-             style-src 'self' https: 'unsafe-inline'; upgrade-insecure-requests",
-            "CSP must lock down all sources"
-        );
-        assert_eq!(
-            headers.get("cross-origin-opener-policy").unwrap(),
-            "same-origin",
-            "COOP must be same-origin"
-        );
-        assert_eq!(
-            headers.get("cross-origin-resource-policy").unwrap(),
-            "same-origin",
-            "CORP must be same-origin"
-        );
-        assert_eq!(
-            headers.get("origin-agent-cluster").unwrap(),
-            "?1",
-            "Origin-Agent-Cluster must be ?1"
-        );
-        assert_eq!(
-            headers.get("referrer-policy").unwrap(),
-            "no-referrer",
-            "Referrer-Policy must be no-referrer"
-        );
-        assert_eq!(
-            headers.get("strict-transport-security").unwrap(),
-            "max-age=15552000; includeSubDomains",
-            "HSTS must be 180 days with subdomains"
-        );
-        assert_eq!(
-            headers.get("x-content-type-options").unwrap(),
-            "nosniff",
-            "X-Content-Type-Options must be nosniff"
-        );
-        assert_eq!(
-            headers.get("x-dns-prefetch-control").unwrap(),
-            "off",
-            "X-DNS-Prefetch-Control must be off"
-        );
-        assert_eq!(
-            headers.get("x-download-options").unwrap(),
-            "noopen",
-            "X-Download-Options must be noopen"
-        );
-        assert_eq!(
-            headers.get("x-frame-options").unwrap(),
-            "SAMEORIGIN",
-            "X-Frame-Options must be sameorigin"
-        );
-        assert_eq!(
-            headers.get("x-permitted-cross-domain-policies").unwrap(),
-            "none",
-            "X-Permitted-Cross-Domain-Policies must be none"
-        );
-        assert_eq!(
-            headers.get("x-xss-protection").unwrap(),
-            "0",
-            "X-XSS-Protection must be 0"
-        );
-    }
-
     const PROD_ML_DSA_44_ADDRESS: &str =
         "yp1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hs5cdx7q";
     const DEV_ML_DSA_44_ADDRESS: &str =
@@ -772,68 +393,6 @@ pub mod tests {
         "yp1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5smc3rlz";
     const DEV_SLH_DSA_SHA2_128_ADDRESS: &str =
         "rh1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5s5m48q0";
-
-    #[test]
-    fn test_sanity_check_semver() {
-        // Valid cases - just check for three parts
-        assert!(Config::sanity_check_semver("1.2.3").is_ok());
-        assert!(Config::sanity_check_semver("a.b.c").is_ok()); // Passes as we only check parts
-        assert!(Config::sanity_check_semver("0.0.0").is_ok());
-
-        // Invalid cases - wrong number of parts
-        assert!(Config::sanity_check_semver("1.2").is_err());
-        assert!(Config::sanity_check_semver("1.2.3.4").is_err());
-        assert!(Config::sanity_check_semver("").is_err());
-    }
-
-    #[test]
-    fn test_sanity_check_environment() {
-        // valid values
-        assert_eq!(
-            Environment::from_str("production"),
-            Ok(Environment::Production)
-        );
-        assert_eq!(
-            Environment::from_str("development"),
-            Ok(Environment::Development)
-        );
-
-        // empty string should be rejected
-        assert_eq!(
-            Environment::from_str(""),
-            Err("Environment must be `production` or `development`")
-        );
-
-        // anything else is rejected with the generic message
-        assert_eq!(
-            Environment::from_str(" "),
-            Err("Environment must be `production` or `development`")
-        );
-        assert_eq!(
-            Environment::from_str("foo"),
-            Err("Environment must be `production` or `development`")
-        );
-    }
-
-    #[test]
-    fn test_sanity_check_url() {
-        // Valid case - http:// in test
-        assert!(Config::sanity_check_url("http://anything").is_ok());
-
-        // Invalid cases
-        assert!(Config::sanity_check_url("https://anything").is_err()); // https:// not allowed in test
-        assert!(Config::sanity_check_url("ftp://example.com").is_err());
-        assert!(Config::sanity_check_url("").is_err());
-    }
-
-    #[test]
-    fn test_sanity_check_api_key() {
-        // Valid case - non-empty string
-        assert!(Config::sanity_check_api_key("any-key").is_ok());
-
-        // Invalid case - empty string
-        assert!(Config::sanity_check_api_key("").is_err());
-    }
 
     #[tokio::test]
     async fn test_healthcheck_function() {

@@ -1,7 +1,9 @@
 // mod websocket;
 
 use crate::{
-    Config, Environment, bad_request, internal_error, ok_or_bad_request, ok_or_internal_error,
+    bad_request,
+    config::{Config, Environment},
+    internal_error, ok_or_bad_request, ok_or_internal_error,
     websocket::{WsCloseCode, handle_ws_upgrade},
 };
 use axum::{
@@ -645,7 +647,7 @@ async fn upload_to_data_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::test_config;
+    use crate::config::tests::test_config;
     use crate::websocket::{AES_GCM_NONCE_LENGTH, tests::TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS};
     use aes_gcm::{
         Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
