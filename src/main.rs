@@ -1,4 +1,5 @@
 mod config;
+#[cfg(test)]
 mod end_to_end_tests;
 mod pq_channel;
 mod prove;
