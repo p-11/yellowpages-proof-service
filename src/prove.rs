@@ -6,7 +6,7 @@ use crate::{
     pq_channel::WsCloseCode,
 };
 use axum::extract::ws::close_code;
-use base64::{Engine, engine::general_purpose};
+use base64::{Engine, engine::general_purpose::STANDARD as base64};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1::{Message, Secp256k1};
 use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_msg_hash};
@@ -41,7 +41,7 @@ impl AttestationDocUserData {
     fn encode(&self) -> Result<String, serde_json::Error> {
         // Serialize to JSON and base64 encode
         let user_data_json = serde_json::to_string(self)?;
-        Ok(general_purpose::STANDARD.encode(user_data_json.as_bytes()))
+        Ok(base64.encode(user_data_json.as_bytes()))
     }
 }
 
@@ -263,7 +263,7 @@ fn validate_inputs(proof_request: &ProofRequest, config: &Config) -> ValidationR
 
     // Decode the base64-encoded message
     let decoded_bitcoin_signed_message = ok_or_bad_request!(
-        general_purpose::STANDARD.decode(&proof_request.bitcoin_signed_message),
+        base64.decode(&proof_request.bitcoin_signed_message),
         "Failed to decode base64 signature"
     );
 
@@ -298,13 +298,13 @@ fn validate_inputs(proof_request: &ProofRequest, config: &Config) -> ValidationR
 
     // Decode ML-DSA 44 signature (should be base64 encoded)
     let ml_dsa_44_signed_message_bytes = ok_or_bad_request!(
-        general_purpose::STANDARD.decode(&proof_request.ml_dsa_44_signed_message),
+        base64.decode(&proof_request.ml_dsa_44_signed_message),
         "Failed to decode ML-DSA 44 signature base64"
     );
 
     // Decode ML-DSA 44 public key (should be base64 encoded)
     let ml_dsa_44_public_key_bytes = ok_or_bad_request!(
-        general_purpose::STANDARD.decode(&proof_request.ml_dsa_44_public_key),
+        base64.decode(&proof_request.ml_dsa_44_public_key),
         "Failed to decode ML-DSA 44 public key base64"
     );
 
@@ -347,13 +347,13 @@ fn validate_inputs(proof_request: &ProofRequest, config: &Config) -> ValidationR
 
     // Decode SLH-DSA SHA2-S-128 signature (should be base64 encoded)
     let slh_dsa_sha2_s_128_signed_message_bytes = ok_or_bad_request!(
-        general_purpose::STANDARD.decode(&proof_request.slh_dsa_sha2_s_128_signed_message),
+        base64.decode(&proof_request.slh_dsa_sha2_s_128_signed_message),
         "Failed to decode SLH-DSA SHA2-S-128 signature base64"
     );
 
     // Decode SLH-DSA SHA2-S-128 public key (should be base64 encoded)
     let slh_dsa_sha2_s_128_public_key_bytes = ok_or_bad_request!(
-        general_purpose::STANDARD.decode(&proof_request.slh_dsa_sha2_s_128_public_key),
+        base64.decode(&proof_request.slh_dsa_sha2_s_128_public_key),
         "Failed to decode SLH-DSA SHA2-S-128 public key base64"
     );
 
@@ -566,7 +566,7 @@ async fn embed_addresses_in_proof(
     );
 
     // Base64 encode the attestation document
-    Ok(general_purpose::STANDARD.encode(attestation_bytes))
+    Ok(base64.encode(attestation_bytes))
 }
 
 #[cfg(test)]
@@ -1226,8 +1226,7 @@ mod tests {
         let user_data_base64 = user_data.encode().unwrap();
 
         // Verify we can decode it back
-        let decoded_json =
-            String::from_utf8(general_purpose::STANDARD.decode(user_data_base64).unwrap()).unwrap();
+        let decoded_json = String::from_utf8(base64.decode(user_data_base64).unwrap()).unwrap();
         let decoded_data: AttestationDocUserData = serde_json::from_str(&decoded_json).unwrap();
 
         // Verify the values match

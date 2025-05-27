@@ -11,7 +11,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
 };
 use axum::extract::ws::{Message as WsMessage, WebSocket, close_code};
-use base64::{Engine, engine::general_purpose};
+use base64::{Engine, engine::general_purpose::STANDARD as base64};
 use ml_kem::{
     Ciphertext, Encoded, EncodedSizeUser, MlKem768, MlKem768Params, SharedKey,
     kem::{Encapsulate, EncapsulationKey},
@@ -129,7 +129,7 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
 
     // Decode the base64 encapsulation key from the client
     let encapsulation_key_bytes = ok_or_bad_request!(
-        general_purpose::STANDARD.decode(&handshake_request.ml_kem_768_encapsulation_key),
+        base64.decode(&handshake_request.ml_kem_768_encapsulation_key),
         "Failed to decode base64 encapsulation key"
     );
 
@@ -164,7 +164,7 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
     };
 
     // Encode the ciphertext to base64
-    let ciphertext_base64 = general_purpose::STANDARD.encode(ciphertext);
+    let ciphertext_base64 = base64.encode(ciphertext);
 
     // Create and send the response
     let handshake_response = HandshakeResponse {

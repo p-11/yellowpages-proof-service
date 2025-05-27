@@ -12,7 +12,7 @@ pub mod tests {
     use axum::extract::ws::close_code;
     use axum::{http::StatusCode, response::IntoResponse, routing::post};
 
-    use base64::{Engine, engine::general_purpose};
+    use base64::{Engine, engine::general_purpose::STANDARD as base64};
     use futures_util::{SinkExt, StreamExt};
 
     use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, SharedKey, kem::Decapsulate};
@@ -38,9 +38,7 @@ pub mod tests {
         Json(request): Json<AttestationRequest>,
     ) -> impl IntoResponse {
         // Decode and verify the challenge
-        let Ok(decoded_json) =
-            String::from_utf8(general_purpose::STANDARD.decode(request.challenge).unwrap())
-        else {
+        let Ok(decoded_json) = String::from_utf8(base64.decode(request.challenge).unwrap()) else {
             return (StatusCode::BAD_REQUEST, "Invalid base64 in challenge").into_response();
         };
 
@@ -102,7 +100,7 @@ pub mod tests {
         }
 
         // Validate that the proof matches our mock attestation document
-        let expected_proof = general_purpose::STANDARD.encode(MOCK_ATTESTATION_DOCUMENT);
+        let expected_proof = base64.encode(MOCK_ATTESTATION_DOCUMENT);
         if request.proof != expected_proof {
             return (
                 StatusCode::BAD_REQUEST,
@@ -283,7 +281,7 @@ pub mod tests {
         let (decapsulation_key, encapsulation_key) = MlKem768::generate(&mut rng);
 
         // Base64 encode the encapsulation key
-        let encap_key_base64 = general_purpose::STANDARD.encode(encapsulation_key.as_bytes());
+        let encap_key_base64 = base64.encode(encapsulation_key.as_bytes());
 
         // Send handshake message with ML-KEM encapsulation key and dummy Turnstile token
         let handshake_json = format!(
@@ -308,7 +306,7 @@ pub mod tests {
             );
 
             // Decrypt the ciphertext to get the shared secret
-            let ciphertext_bytes = general_purpose::STANDARD
+            let ciphertext_bytes = base64
                 .decode(&handshake_response.ml_kem_768_ciphertext)
                 .expect("Failed to decode ciphertext");
 
