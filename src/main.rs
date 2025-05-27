@@ -6,48 +6,22 @@ mod prove;
 mod utils;
 
 use axum::{
-    BoxError, Json, Router,
+    Json, Router,
     error_handling::HandleErrorLayer,
-    extract::{Query, State, WebSocketUpgrade, ws::close_code},
-    http::{HeaderValue, Method, StatusCode as HttpStatusCode},
-    response::{IntoResponse, Response},
+    extract::{Query, State, WebSocketUpgrade},
+    http::StatusCode as HttpStatusCode,
+    response::IntoResponse,
     routing::get,
 };
 use axum_helmet::{Helmet, HelmetLayer};
-use base64::{Engine, engine::general_purpose};
-use bitcoin::hashes::{Hash, sha256};
-use bitcoin::secp256k1::{Message, Secp256k1};
-use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_msg_hash};
-use bitcoin::{Address as BitcoinAddress, Network, address::AddressType};
-use config::{Config, Environment, handle_rate_limit_error};
-use env_logger::Env;
-use log::LevelFilter;
-use ml_dsa::{
-    EncodedVerifyingKey as MlDsaEncodedVerifyingKey, MlDsa44, Signature as MlDsaSignature,
-    VerifyingKey as MlDsaVerifyingKey, signature::Verifier as MlDsaVerifier,
-};
-use pq_address::{
-    DecodedAddress as DecodedPqAddress, Network as PqNetwork, PubKeyType as PqPubKeyType,
-    decode_address as decode_pq_address,
-};
-use pq_channel::{WsCloseCode, run_pq_channel_protocol};
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use config::{Config, handle_rate_limit_error};
+use pq_channel::run_pq_channel_protocol;
 use serde_json::json;
-use slh_dsa::{Sha2_128s, Signature as SlhDsaSignature, VerifyingKey as SlhDsaVerifyingKey};
-use std::env;
 use std::net::SocketAddr;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tower::{
-    ServiceBuilder,
-    buffer::BufferLayer,
-    limit::RateLimitLayer,
-    load_shed::{LoadShedLayer, error::Overloaded},
-};
+use tower::{ServiceBuilder, buffer::BufferLayer, limit::RateLimitLayer, load_shed::LoadShedLayer};
 use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
-use tower_http::cors::{AllowOrigin, CorsLayer};
 use utils::validate_cloudflare_turnstile_token;
 
 const GLOBAL_RATE_LIMIT_REQS_PER_MIN: u64 = 1_000; // 1,000 requests per minute

@@ -1,21 +1,16 @@
 use crate::{
     bad_request,
-    config::{Config, Environment},
+    config::Config,
     internal_error, ok_or_bad_request, ok_or_internal_error,
     prove::{ProofRequest, prove},
-    utils::{send_close_frame, validate_cloudflare_turnstile_token},
+    utils::send_close_frame,
     with_timeout,
 };
 use aes_gcm::{
     Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
     aead::{Aead, KeyInit},
 };
-use axum::{
-    extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade, close_code},
-    extract::{Query, State},
-    http::StatusCode as HttpStatusCode,
-    response::IntoResponse,
-};
+use axum::extract::ws::{Message as WsMessage, WebSocket, close_code};
 use base64::{Engine, engine::general_purpose};
 use ml_kem::{
     Ciphertext, Encoded, EncodedSizeUser, MlKem768, MlKem768Params, SharedKey,
@@ -45,15 +40,6 @@ pub const AES_GCM_NONCE_LENGTH: usize = 12; // length in bytes
 // This includes the nonce (12 bytes), the AES-GCM tag (16 bytes), and the encrypted data
 const MAX_ENCRYPTED_PROOF_REQUEST_LENGTH: usize = 16500;
 const AES_256_KEY_LENGTH: usize = 32; // length in bytes
-
-// Cloudflare Turnstile constants
-const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
-// A Turnstile token can have up to 2048 characters: https://developers.cloudflare.com/turnstile/get-started/server-side-validation/
-const MAX_TURNSTILE_TOKEN_LENGTH: usize = 2048;
-// Test secret key that always passes
-const TURNSTILE_TEST_SECRET_KEY_ALWAYS_PASSES: &str = "1x0000000000000000000000000000000AA";
-// Dummy token returned by Cloudflare Turnstile test config
-pub const TURNSTILE_TEST_DUMMY_TOKEN: &str = "XXXX.DUMMY.TOKEN.XXXX";
 
 /// Type alias for WebSocket close codes
 pub type WsCloseCode = u16;

@@ -1,44 +1,14 @@
-use crate::pq_channel::WsCloseCode;
 use axum::{
-    BoxError, Json, Router,
-    error_handling::HandleErrorLayer,
-    extract::{State, ws::close_code},
+    BoxError,
     http::{HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
 };
-use axum_helmet::{Helmet, HelmetLayer};
-use base64::{Engine, engine::general_purpose};
-use bitcoin::hashes::{Hash, sha256};
-use bitcoin::secp256k1::{Message, Secp256k1};
-use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_msg_hash};
-use bitcoin::{Address as BitcoinAddress, Network, address::AddressType};
 use env_logger::Env;
 use log::LevelFilter;
-use ml_dsa::{
-    EncodedVerifyingKey as MlDsaEncodedVerifyingKey, MlDsa44, Signature as MlDsaSignature,
-    VerifyingKey as MlDsaVerifyingKey, signature::Verifier as MlDsaVerifier,
-};
-use pq_address::{
-    DecodedAddress as DecodedPqAddress, Network as PqNetwork, PubKeyType as PqPubKeyType,
-    decode_address as decode_pq_address,
-};
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use slh_dsa::{Sha2_128s, Signature as SlhDsaSignature, VerifyingKey as SlhDsaVerifyingKey};
+use pq_address::Network as PqNetwork;
 use std::env;
-use std::net::SocketAddr;
 use std::str::FromStr;
-use std::sync::Arc;
-use std::time::Duration;
-use tower::{
-    ServiceBuilder,
-    buffer::BufferLayer,
-    limit::RateLimitLayer,
-    load_shed::{LoadShedLayer, error::Overloaded},
-};
-use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
+use tower::load_shed::error::Overloaded;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -219,8 +189,6 @@ impl Config {
     }
 }
 
-const GLOBAL_RATE_LIMIT_REQS_PER_MIN: u64 = 1_000; // 1,000 requests per minute
-
 pub async fn handle_rate_limit_error(err: BoxError) -> Response {
     if err.is::<Overloaded>() {
         // this is our "too many requests" signal
@@ -238,50 +206,16 @@ pub async fn handle_rate_limit_error(err: BoxError) -> Response {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::pq_channel::AES_GCM_NONCE_LENGTH;
-    use crate::prove::{AttestationRequest, ProofRequest, UserData};
-    use crate::utils::UploadProofRequest;
+
     use crate::utils::tests::TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS;
-    use aes_gcm::{
-        Aes256Gcm, Key as Aes256GcmKey, Nonce as Aes256GcmNonce,
-        aead::{Aead, KeyInit},
-    };
+    use axum::http::{HeaderMap, Request, header};
     use axum::{
         body::Body,
         {Router, routing::get},
     };
-    use axum::{
-        http::StatusCode,
-        http::{HeaderMap, Request, header},
-        response::IntoResponse,
-        routing::post,
-    };
-    use futures_util::{SinkExt, StreamExt};
-    use ml_dsa::{KeyGen, signature::Signer};
-    use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, SharedKey, kem::Decapsulate};
-    use pq_address::{
-        AddressParams as PqAddressParams, Network as PqNetwork, Version as PqVersion,
-        encode_address as pq_encode_address,
-    };
-    use rand::{RngCore, SeedableRng, rngs::StdRng};
-    use serial_test::serial;
-    use slh_dsa::{SigningKey as SlhDsaSigningKey, signature::Keypair as SlhDsaKeypair};
-    use tokio::net::TcpListener;
-    use tokio_tungstenite::connect_async;
-    use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
+
+    use axum_helmet::{Helmet, HelmetLayer};
     use tower::ServiceExt; // for .oneshot()
-
-    // Add a constant for our mock attestation document
-    const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
-
-    const PROD_ML_DSA_44_ADDRESS: &str =
-        "yp1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hs5cdx7q";
-    const DEV_ML_DSA_44_ADDRESS: &str =
-        "rh1qpqg39uw700gcctpahe650p9zlzpnjt60cpz09m4kx7ncz8922635hsmmfzpd";
-    const PROD_SLH_DSA_SHA2_128_ADDRESS: &str =
-        "yp1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5smc3rlz";
-    const DEV_SLH_DSA_SHA2_128_ADDRESS: &str =
-        "rh1qpq3z7j5vfjd9y5vlc86al02ujud4tynj73rahcdaa9cdgu47matt5s5m48q0";
 
     pub fn test_config() -> Config {
         Config {

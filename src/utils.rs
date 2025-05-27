@@ -1,54 +1,16 @@
 use crate::config::{Config, Environment};
 use crate::pq_channel::WsCloseCode;
 use axum::{
-    BoxError, Json, Router,
-    error_handling::HandleErrorLayer,
-    extract::{
-        State,
-        ws::{CloseFrame, Message as WsMessage, WebSocket, close_code},
-    },
-    http::{HeaderValue, Method, StatusCode as HttpStatusCode},
-    response::{IntoResponse, Response},
-    routing::get,
+    extract::ws::{CloseFrame, Message as WsMessage, WebSocket, close_code},
+    http::StatusCode as HttpStatusCode,
 };
-use axum_helmet::{Helmet, HelmetLayer};
-use base64::{Engine, engine::general_purpose};
-use bitcoin::hashes::{Hash, sha256};
-use bitcoin::secp256k1::{Message, Secp256k1};
-use bitcoin::sign_message::{MessageSignature as BitcoinMessageSignature, signed_msg_hash};
-use bitcoin::{Address as BitcoinAddress, Network, address::AddressType};
-use env_logger::Env;
-use log::LevelFilter;
-use ml_dsa::{
-    EncodedVerifyingKey as MlDsaEncodedVerifyingKey, MlDsa44, Signature as MlDsaSignature,
-    VerifyingKey as MlDsaVerifyingKey, signature::Verifier as MlDsaVerifier,
-};
-use pq_address::{
-    DecodedAddress as DecodedPqAddress, Network as PqNetwork, PubKeyType as PqPubKeyType,
-    decode_address as decode_pq_address,
-};
+use bitcoin::Address as BitcoinAddress;
+use pq_address::DecodedAddress as DecodedPqAddress;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use slh_dsa::{Sha2_128s, Signature as SlhDsaSignature, VerifyingKey as SlhDsaVerifyingKey};
-use std::env;
-use std::net::SocketAddr;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::time::Duration;
-use tower::{
-    ServiceBuilder,
-    buffer::BufferLayer,
-    limit::RateLimitLayer,
-    load_shed::{LoadShedLayer, error::Overloaded},
-};
-use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
-use tower_http::cors::{AllowOrigin, CorsLayer};
 
 // Cloudflare Turnstile constants
 const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
-// A Turnstile token can have up to 2048 characters: https://developers.cloudflare.com/turnstile/get-started/server-side-validation/
-const MAX_TURNSTILE_TOKEN_LENGTH: usize = 2048;
 // Test secret key that always passes
 const TURNSTILE_TEST_SECRET_KEY_ALWAYS_PASSES: &str = "1x0000000000000000000000000000000AA";
 // Dummy token returned by Cloudflare Turnstile test config
