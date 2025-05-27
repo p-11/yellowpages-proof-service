@@ -18,7 +18,7 @@ pub mod tests {
     use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, SharedKey, kem::Decapsulate};
 
     use pq_channel::AES_GCM_NONCE_LENGTH;
-    use prove::{AttestationRequest, ProofRequest, UserData};
+    use prove::{AttestationDocUserData, AttestationRequest, ProofRequest};
     use rand::{RngCore, SeedableRng, rngs::StdRng};
     use serial_test::serial;
 
@@ -44,7 +44,9 @@ pub mod tests {
             return (StatusCode::BAD_REQUEST, "Invalid base64 in challenge").into_response();
         };
 
-        let Ok(decoded_data): Result<UserData, _> = serde_json::from_str(&decoded_json) else {
+        let Ok(decoded_data): Result<AttestationDocUserData, _> =
+            serde_json::from_str(&decoded_json)
+        else {
             return (StatusCode::BAD_REQUEST, "Invalid JSON in challenge").into_response();
         };
 

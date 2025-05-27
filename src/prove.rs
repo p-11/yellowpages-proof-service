@@ -31,13 +31,13 @@ pub struct AttestationRequest {
 
 #[derive(Serialize, Deserialize)]
 #[allow(clippy::struct_field_names)]
-pub struct UserData {
+pub struct AttestationDocUserData {
     pub bitcoin_address: String,
     pub ml_dsa_44_address: String,
     pub slh_dsa_sha2_s_128_address: String,
 }
 
-impl UserData {
+impl AttestationDocUserData {
     fn encode(&self) -> Result<String, serde_json::Error> {
         // Serialize to JSON and base64 encode
         let user_data_json = serde_json::to_string(self)?;
@@ -528,7 +528,7 @@ async fn embed_addresses_in_proof(
     let client = Client::new();
 
     // Create and encode the user data struct
-    let user_data = UserData {
+    let user_data = AttestationDocUserData {
         bitcoin_address: bitcoin_address.to_string(),
         ml_dsa_44_address: ml_dsa_44_address.to_string(),
         slh_dsa_sha2_s_128_address: slh_dsa_sha2_s_128_address.to_string(),
@@ -1216,7 +1216,7 @@ mod tests {
     #[test]
     fn test_user_data_encoding() {
         // Create and encode user data
-        let user_data = UserData {
+        let user_data = AttestationDocUserData {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
@@ -1228,7 +1228,7 @@ mod tests {
         // Verify we can decode it back
         let decoded_json =
             String::from_utf8(general_purpose::STANDARD.decode(user_data_base64).unwrap()).unwrap();
-        let decoded_data: UserData = serde_json::from_str(&decoded_json).unwrap();
+        let decoded_data: AttestationDocUserData = serde_json::from_str(&decoded_json).unwrap();
 
         // Verify the values match
         assert_eq!(decoded_data.bitcoin_address, VALID_BITCOIN_ADDRESS_P2PKH);
@@ -1245,7 +1245,7 @@ mod tests {
         // https://github.com/aws/aws-nitro-enclaves-nsm-api/blob/main/docs/attestation_process.md#22-attestation-document-specification
         const MAX_ENCODED_USER_DATA: usize = 1024;
         // Create and encode user data
-        let user_data = UserData {
+        let user_data = AttestationDocUserData {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
