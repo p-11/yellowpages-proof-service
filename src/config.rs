@@ -81,16 +81,10 @@ impl Environment {
     /// Configure CORS for the given environment.
     ///
     /// This function sets up the CORS layer with allowed methods and origins based on the environment.
-    ///
-    /// # Returns
-    /// - `Result<CorsLayer, String>`: A result containing the configured CORS layer or an error message.
-    ///
-    /// # Errors
-    ///
-    /// If the CORS configuration fails, an error message is returned.
-    pub fn cors_layer(&self) -> Result<CorsLayer, String> {
+    pub fn cors_layer(&self) -> CorsLayer {
         // Allowed Methods
         let methods = [Method::GET];
+
         // Allowed Origins
         let origin_cfg = match self {
             Environment::Development => {
@@ -109,9 +103,9 @@ impl Environment {
             Environment::Production => AllowOrigin::list(self.allowed_origins()),
         };
 
-        Ok(CorsLayer::new()
+        CorsLayer::new()
             .allow_methods(methods)
-            .allow_origin(origin_cfg))
+            .allow_origin(origin_cfg)
     }
 
     /// Set up logging based on the environment.
@@ -251,7 +245,7 @@ pub mod tests {
 
     /// Spin up a 1-route app with the CORS layer.
     fn setup_app(env: &Environment) -> Router {
-        let cors = env.cors_layer().expect("bad CORS config");
+        let cors = env.cors_layer();
         let helmet = HelmetLayer::new(Helmet::default());
         Router::new()
             .route("/", get(|| async { "ok" }))

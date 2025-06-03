@@ -9,8 +9,7 @@ use axum::{
     Json, Router,
     error_handling::HandleErrorLayer,
     extract::{Query, State, WebSocketUpgrade},
-    http::StatusCode as HttpStatusCode,
-    http::header::ORIGIN,
+    http::{HeaderMap, StatusCode as HttpStatusCode, header::ORIGIN},
     response::IntoResponse,
     routing::get,
 };
@@ -46,13 +45,7 @@ async fn main() {
     config.environment.setup_logging();
 
     // Configure CORS to allow env specific origins & restrict headers
-    let cors = match config.environment.cors_layer() {
-        Ok(cors) => cors,
-        Err(e) => {
-            log::error!("Failed to build cors layer: {e}");
-            std::process::exit(1);
-        }
-    };
+    let cors = config.environment.cors_layer();
 
     // /prove IP agnostic rate limiter - first line of defense
     // Bot nets etc can easily spin up multiple IPs
@@ -139,17 +132,14 @@ pub async fn handle_ws_upgrade(
     State(config): State<Config>,
     Query(params): Query<std::collections::HashMap<String, String>>,
     ws: WebSocketUpgrade,
-    headers: axum::http::HeaderMap,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     log::info!("Received WebSocket upgrade request");
 
     // Validate Origin header
-    let origin = match headers.get(ORIGIN) {
-        Some(origin) => origin,
-        None => {
-            log::error!("Missing Origin header");
-            return HttpStatusCode::FORBIDDEN.into_response();
-        }
+    let Some(origin) = headers.get(ORIGIN) else {
+        log::error!("Missing Origin header");
+        return HttpStatusCode::FORBIDDEN.into_response();
     };
 
     // Check if origin is allowed
