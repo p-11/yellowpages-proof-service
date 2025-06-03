@@ -627,7 +627,7 @@ async fn test_end_to_end_invalid_origin() {
     )
     .await;
 
-    // Connect to the WebSocket server with invalid turnstile token
+    // Connect to the WebSocket server with invalid origin
     let ws_url = "ws://127.0.0.1:8008/prove".to_string();
     let mut request = ws_url.into_client_request().unwrap();
     request.headers_mut().insert(
@@ -636,7 +636,7 @@ async fn test_end_to_end_invalid_origin() {
     );
     let connection_result = connect_async(request).await;
 
-    // The connection should fail with an HTTP error due to invalid turnstile token
+    // The connection should fail with an HTTP error due to invalid origin
     assert!(
         connection_result.is_err(),
         "WebSocket connection should fail with invalid origin header"
