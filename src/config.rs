@@ -84,15 +84,18 @@ impl Environment {
     pub fn cors_layer(&self) -> CorsLayer {
         // Allowed Methods
         let methods = [Method::GET];
+        let allowed_origins = self.allowed_origins();
 
         // Allowed Origins
         let origin_cfg = match self {
             Environment::Development => {
-                let dev_allowed = self.allowed_origins();
                 // build a single matcher that first checks exact list,
                 // then falls back to the "yellowpages-client*.vercel.app" rule:
                 AllowOrigin::predicate(move |hv, _| {
-                    if dev_allowed.iter().any(|u| u.as_bytes() == hv.as_bytes()) {
+                    if allowed_origins
+                        .iter()
+                        .any(|u| u.as_bytes() == hv.as_bytes())
+                    {
                         true
                     } else {
                         let s = hv.to_str().unwrap_or("");
