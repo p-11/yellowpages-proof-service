@@ -2,6 +2,7 @@ use crate::config::{Config, Environment};
 use crate::pq_channel::WsCloseCode;
 use axum::{
     extract::ws::{CloseFrame, Message as WsMessage, WebSocket, close_code},
+    http::HeaderValue,
     http::StatusCode as HttpStatusCode,
 };
 use bitcoin::Address as BitcoinAddress;
@@ -208,13 +209,17 @@ pub async fn send_close_frame(socket: &mut WebSocket, code: WsCloseCode) {
 }
 
 /// Check if a domain is a valid Vercel preview domain for our app
-pub fn is_vercel_preview_domain(origin: &str) -> bool {
-    origin.starts_with("https://yellowpages-client") && origin.ends_with(".vercel.app")
+pub fn is_vercel_preview_domain(origin: &HeaderValue) -> bool {
+    origin
+        .to_str()
+        .map(|s| s.starts_with("https://yellowpages-client") && s.ends_with(".vercel.app"))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use axum::http::HeaderValue;
     pub const TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS: &str = "2x00000000000000000000BB";
 
     #[tokio::test]
@@ -282,26 +287,39 @@ pub mod tests {
     fn test_vercel_preview_domain() {
         // Valid cases
         assert!(
-            is_vercel_preview_domain("https://yellowpages-client-git-feature-abc-123.vercel.app"),
+            is_vercel_preview_domain(&HeaderValue::from_static(
+                "https://yellowpages-client-git-feature-abc-123.vercel.app"
+            )),
             "Should accept feature branch preview URL"
         );
         assert!(
-            is_vercel_preview_domain("https://yellowpages-client.vercel.app"),
+            is_vercel_preview_domain(&HeaderValue::from_static(
+                "https://yellowpages-client.vercel.app"
+            )),
             "Should accept simple preview URL"
         );
 
         // Invalid cases
         assert!(
-            !is_vercel_preview_domain("https://yellowpages-client-fake.example.com"),
+            !is_vercel_preview_domain(&HeaderValue::from_static(
+                "https://yellowpages-client-fake.example.com"
+            )),
             "Should reject non-vercel domain"
         );
         assert!(
-            !is_vercel_preview_domain("http://yellowpages-client.vercel.app"),
+            !is_vercel_preview_domain(&HeaderValue::from_static(
+                "http://yellowpages-client.vercel.app"
+            )),
             "Should reject non-HTTPS URL"
         );
         assert!(
-            !is_vercel_preview_domain("https://other-client.vercel.app"),
+            !is_vercel_preview_domain(&HeaderValue::from_static("https://other-client.vercel.app")),
             "Should reject different project name"
+        );
+        // Test invalid UTF-8
+        assert!(
+            !is_vercel_preview_domain(&HeaderValue::from_bytes(b"invalid\xFF").unwrap()),
+            "Should reject invalid UTF-8"
         );
     }
 }

@@ -70,9 +70,7 @@ impl Environment {
 
         // For development, also check Vercel preview domains
         if matches!(self, Environment::Development) {
-            if let Ok(origin_str) = origin.to_str() {
-                return is_vercel_preview_domain(origin_str);
-            }
+            return is_vercel_preview_domain(origin);
         }
 
         false
@@ -98,8 +96,7 @@ impl Environment {
                     {
                         true
                     } else {
-                        let s = hv.to_str().unwrap_or("");
-                        is_vercel_preview_domain(s)
+                        is_vercel_preview_domain(hv)
                     }
                 })
             }
