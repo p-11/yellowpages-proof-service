@@ -21,8 +21,8 @@ use rand::{RngCore, SeedableRng, rngs::StdRng};
 use serial_test::serial;
 
 use tokio::net::TcpListener;
-use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
+use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest, tungstenite::http};
 
 // Add a constant for our mock attestation document
 const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
@@ -260,7 +260,12 @@ async fn set_up_end_to_end_test_servers(
 
     // Connect to the WebSocket server
     let ws_url = format!("ws://{addr}/prove?cf_turnstile_token=XXXX.DUMMY.TOKEN.XXXX");
-    let (ws_stream, _) = connect_async(ws_url)
+    let mut request = ws_url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        http::header::ORIGIN,
+        http::HeaderValue::from_static("http://localhost:3000"),
+    );
+    let (ws_stream, _) = connect_async(request)
         .await
         .expect("Failed to connect to WebSocket server");
 
@@ -584,7 +589,12 @@ async fn test_end_to_end_without_turnstile_token() {
 
     // Connect to the WebSocket server with invalid turnstile token
     let ws_url = "ws://127.0.0.1:8008/prove".to_string();
-    let connection_result = connect_async(ws_url).await;
+    let mut request = ws_url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        http::header::ORIGIN,
+        http::HeaderValue::from_static("http://localhost:3000"),
+    );
+    let connection_result = connect_async(request).await;
 
     // The connection should fail with an HTTP error due to invalid turnstile token
     assert!(
@@ -600,6 +610,46 @@ async fn test_end_to_end_without_turnstile_token() {
                 response.status(),
                 400,
                 "Should get 400 Bad Request status for invalid turnstile token"
+            );
+        }
+        _ => panic!("Expected HTTP error, got: {error:?}"),
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_end_to_end_invalid_origin() {
+    // Set up the test servers
+    let _ = set_up_end_to_end_test_servers(
+        VALID_BITCOIN_ADDRESS_P2PKH,
+        VALID_ML_DSA_44_ADDRESS,
+        VALID_SLH_DSA_SHA2_128_ADDRESS,
+    )
+    .await;
+
+    // Connect to the WebSocket server with invalid origin
+    let ws_url = "ws://127.0.0.1:8008/prove".to_string();
+    let mut request = ws_url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        http::header::ORIGIN,
+        http::HeaderValue::from_static("http://example.com"),
+    );
+    let connection_result = connect_async(request).await;
+
+    // The connection should fail with an HTTP error due to invalid origin
+    assert!(
+        connection_result.is_err(),
+        "WebSocket connection should fail with invalid origin header"
+    );
+
+    // Verify it's a WebSocket protocol error (which indicates HTTP error during upgrade)
+    let error = connection_result.unwrap_err();
+    match error {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            assert_eq!(
+                response.status(),
+                403,
+                "Should get 403 Unauthorized status for invalid origin header"
             );
         }
         _ => panic!("Expected HTTP error, got: {error:?}"),
