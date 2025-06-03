@@ -1,3 +1,4 @@
+use crate::utils::is_vercel_preview_domain;
 use axum::{
     BoxError,
     http::{HeaderValue, Method, StatusCode},
@@ -37,6 +38,46 @@ impl Environment {
         }
     }
 
+    /// Returns the list of allowed origins for this environment
+    pub fn allowed_origins(&self) -> Vec<HeaderValue> {
+        match self {
+            Environment::Development => {
+                vec![
+                    HeaderValue::from_static("http://localhost:3000"),
+                    HeaderValue::from_static("https://yellowpages-development.xyz"),
+                    HeaderValue::from_static("https://www.yellowpages-development.xyz"),
+                ]
+            }
+            Environment::Production => {
+                vec![
+                    HeaderValue::from_static("https://www.yellowpages.xyz"),
+                    HeaderValue::from_static("https://yellowpages.xyz"),
+                ]
+            }
+        }
+    }
+
+    /// Check if the given origin is allowed for this environment
+    pub fn is_allowed_origin(&self, origin: &HeaderValue) -> bool {
+        // First check against exact matches
+        if self
+            .allowed_origins()
+            .iter()
+            .any(|allowed| allowed.as_bytes() == origin.as_bytes())
+        {
+            return true;
+        }
+
+        // For development, also check Vercel preview domains
+        if matches!(self, Environment::Development) {
+            if let Ok(origin_str) = origin.to_str() {
+                return is_vercel_preview_domain(origin_str);
+            }
+        }
+
+        false
+    }
+
     /// Configure CORS for the given environment.
     ///
     /// This function sets up the CORS layer with allowed methods and origins based on the environment.
@@ -53,16 +94,7 @@ impl Environment {
         // Allowed Origins
         let origin_cfg = match self {
             Environment::Development => {
-                let dev_allowed = [
-                    "http://localhost:3000",
-                    "https://yellowpages-development.xyz",
-                    "https://www.yellowpages-development.xyz",
-                ]
-                .map(|s| {
-                    HeaderValue::from_str(s).map_err(|e| format!("Invalid CORS origin `{s}`: {e}"))
-                })
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()?;
+                let dev_allowed = self.allowed_origins();
                 // build a single matcher that first checks exact list,
                 // then falls back to the "yellowpages-client*.vercel.app" rule:
                 AllowOrigin::predicate(move |hv, _| {
@@ -70,21 +102,11 @@ impl Environment {
                         true
                     } else {
                         let s = hv.to_str().unwrap_or("");
-                        s.starts_with("https://yellowpages-client") && s.ends_with(".vercel.app")
+                        is_vercel_preview_domain(s)
                     }
                 })
             }
-            Environment::Production => {
-                // only these two in prod
-                let prod_allowed = ["https://www.yellowpages.xyz", "https://yellowpages.xyz"]
-                    .map(|s| {
-                        HeaderValue::from_str(s)
-                            .map_err(|e| format!("Invalid CORS origin `{s}`: {e}"))
-                    })
-                    .into_iter()
-                    .collect::<Result<Vec<_>, _>>()?;
-                AllowOrigin::list(prod_allowed)
-            }
+            Environment::Production => AllowOrigin::list(self.allowed_origins()),
         };
 
         Ok(CorsLayer::new()

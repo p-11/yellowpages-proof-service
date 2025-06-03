@@ -10,6 +10,7 @@ use axum::{
     error_handling::HandleErrorLayer,
     extract::{Query, State, WebSocketUpgrade},
     http::StatusCode as HttpStatusCode,
+    http::header::ORIGIN,
     response::IntoResponse,
     routing::get,
 };
@@ -138,8 +139,27 @@ pub async fn handle_ws_upgrade(
     State(config): State<Config>,
     Query(params): Query<std::collections::HashMap<String, String>>,
     ws: WebSocketUpgrade,
+    headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     log::info!("Received WebSocket upgrade request");
+
+    // Validate Origin header
+    let origin = match headers.get(ORIGIN) {
+        Some(origin) => origin,
+        None => {
+            log::error!("Missing Origin header");
+            return HttpStatusCode::FORBIDDEN.into_response();
+        }
+    };
+
+    // Check if origin is allowed
+    if !config.environment.is_allowed_origin(origin) {
+        log::error!(
+            "Invalid Origin header: {}",
+            origin.to_str().unwrap_or("invalid utf-8")
+        );
+        return HttpStatusCode::FORBIDDEN.into_response();
+    }
 
     // Extract and validate Turnstile token from query parameters
     let Some(turnstile_token) = params.get("cf_turnstile_token") else {
