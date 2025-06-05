@@ -218,7 +218,7 @@ pub fn is_vercel_preview_domain(origin: &HeaderValue) -> bool {
         .unwrap_or(false)
 }
 
-/// A KeyExtractor that uses the rightmost (last) IP address from the X-Forwarded-For header.
+/// A `KeyExtractor` that uses the rightmost (last) IP address from the X-Forwarded-For header.
 /// Returns an error if the header is not present or invalid, as we expect this header to always be present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RightmostXForwardedForIpExtractor;
@@ -245,9 +245,9 @@ impl tower_governor::key_extractor::KeyExtractor for RightmostXForwardedForIpExt
         // Split by comma and get the last (rightmost) IP address
         header_str
             .split(',')
-            .map(|s| s.trim())
+            .map(str::trim)
             .filter_map(|s| s.parse::<IpAddr>().ok())
-            .last()
+            .next_back()
             .ok_or(tower_governor::errors::GovernorError::UnableToExtractKey)
     }
 }
