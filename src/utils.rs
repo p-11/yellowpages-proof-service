@@ -234,7 +234,7 @@ impl tower_governor::key_extractor::KeyExtractor for RightmostForwardedIpExtract
 
         // Get the X-Forwarded-For header - error if not present as we expect it
         let header_value = headers
-            .get("x-forwarded-for")
+            .get("X-Forwarded-For")
             .ok_or(tower_governor::errors::GovernorError::UnableToExtractKey)?;
 
         // Convert to string - error if invalid UTF-8
@@ -367,13 +367,13 @@ pub mod tests {
         // Test case 1: Valid X-Forwarded-For with multiple IPs
         let mut headers = HeaderMap::new();
         headers.insert(
-            "x-forwarded-for",
+            "X-Forwarded-For",
             HeaderValue::from_static(
                 "203.0.113.195, 2001:db8:85a3:8d3:1319:8a2e:370:7348, 198.51.100.178",
             ),
         );
         let req = Request::builder()
-            .header("x-forwarded-for", headers.get("x-forwarded-for").unwrap())
+            .header("X-Forwarded-For", headers.get("X-Forwarded-For").unwrap())
             .body(())
             .unwrap();
         let result = extractor.extract(&req);
@@ -382,9 +382,9 @@ pub mod tests {
 
         // Test case 2: Valid X-Forwarded-For with single IP
         let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", HeaderValue::from_static("203.0.113.195"));
+        headers.insert("X-Forwarded-For", HeaderValue::from_static("203.0.113.195"));
         let req = Request::builder()
-            .header("x-forwarded-for", headers.get("x-forwarded-for").unwrap())
+            .header("X-Forwarded-For", headers.get("X-Forwarded-For").unwrap())
             .body(())
             .unwrap();
         let result = extractor.extract(&req);
@@ -403,11 +403,11 @@ pub mod tests {
         // Test case 4: Invalid IP address format
         let mut headers = HeaderMap::new();
         headers.insert(
-            "x-forwarded-for",
+            "X-Forwarded-For",
             HeaderValue::from_static("not.an.ip.address"),
         );
         let req = Request::builder()
-            .header("x-forwarded-for", headers.get("x-forwarded-for").unwrap())
+            .header("X-Forwarded-For", headers.get("X-Forwarded-For").unwrap())
             .body(())
             .unwrap();
         let result = extractor.extract(&req);
@@ -420,11 +420,11 @@ pub mod tests {
         // Test case 5: Mixed valid and invalid IPs (should get last valid one)
         let mut headers = HeaderMap::new();
         headers.insert(
-            "x-forwarded-for",
+            "X-Forwarded-For",
             HeaderValue::from_static("203.0.113.195, invalid.ip, 198.51.100.178"),
         );
         let req = Request::builder()
-            .header("x-forwarded-for", headers.get("x-forwarded-for").unwrap())
+            .header("X-Forwarded-For", headers.get("X-Forwarded-For").unwrap())
             .body(())
             .unwrap();
         let result = extractor.extract(&req);
@@ -433,9 +433,9 @@ pub mod tests {
 
         // Test case 6: Invalid UTF-8 in header
         let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", HeaderValue::from_bytes(&[0xFF]).unwrap());
+        headers.insert("X-Forwarded-For", HeaderValue::from_bytes(&[0xFF]).unwrap());
         let req = Request::builder()
-            .header("x-forwarded-for", headers.get("x-forwarded-for").unwrap())
+            .header("X-Forwarded-For", headers.get("X-Forwarded-For").unwrap())
             .body(())
             .unwrap();
         let result = extractor.extract(&req);
@@ -447,9 +447,9 @@ pub mod tests {
 
         // Test case 7: Empty header value
         let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", HeaderValue::from_static(""));
+        headers.insert("X-Forwarded-For", HeaderValue::from_static(""));
         let req = Request::builder()
-            .header("x-forwarded-for", headers.get("x-forwarded-for").unwrap())
+            .header("X-Forwarded-For", headers.get("X-Forwarded-For").unwrap())
             .body(())
             .unwrap();
         let result = extractor.extract(&req);
@@ -461,13 +461,24 @@ pub mod tests {
 
         // Test case 8: Header with leading empty value
         let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", HeaderValue::from_static(", 1.2.3.4"));
+        headers.insert("X-Forwarded-For", HeaderValue::from_static(", 1.2.3.4"));
+        let req = Request::builder()
+            .header("X-Forwarded-For", headers.get("X-Forwarded-For").unwrap())
+            .body(())
+            .unwrap();
+        let result = extractor.extract(&req);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().to_string(), "1.2.3.4");
+
+        // Test case 9: Lowercase header name should work too
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("5.6.7.8"));
         let req = Request::builder()
             .header("x-forwarded-for", headers.get("x-forwarded-for").unwrap())
             .body(())
             .unwrap();
         let result = extractor.extract(&req);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().to_string(), "1.2.3.4");
+        assert_eq!(result.unwrap().to_string(), "5.6.7.8");
     }
 }
