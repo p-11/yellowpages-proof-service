@@ -4,11 +4,13 @@ use axum::{
     extract::ws::{CloseFrame, Message as WsMessage, WebSocket, close_code},
     http::HeaderValue,
     http::StatusCode as HttpStatusCode,
+    http::request::Request,
 };
 use bitcoin::Address as BitcoinAddress;
 use pq_address::DecodedAddress as DecodedPqAddress;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 
 // Cloudflare Turnstile constants
 const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
@@ -216,10 +218,45 @@ pub fn is_vercel_preview_domain(origin: &HeaderValue) -> bool {
         .unwrap_or(false)
 }
 
+/// A `KeyExtractor` that uses the rightmost (last) IP address from the X-Forwarded-For header.
+/// Returns an error if the header is not present or invalid, as we expect this header to always be present.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RightmostXForwardedForIpExtractor;
+
+impl tower_governor::key_extractor::KeyExtractor for RightmostXForwardedForIpExtractor {
+    type Key = IpAddr;
+
+    fn extract<T>(
+        &self,
+        req: &Request<T>,
+    ) -> Result<Self::Key, tower_governor::errors::GovernorError> {
+        let headers = req.headers();
+
+        // Get the X-Forwarded-For header - error if not present as we expect it
+        let header_value = headers
+            .get("X-Forwarded-For")
+            .ok_or(tower_governor::errors::GovernorError::UnableToExtractKey)?;
+
+        // Convert to string - error if invalid UTF-8
+        let header_str = header_value
+            .to_str()
+            .map_err(|_| tower_governor::errors::GovernorError::UnableToExtractKey)?;
+
+        // Split by comma and get the last (rightmost) IP address
+        header_str
+            .split(',')
+            .map(str::trim)
+            .filter_map(|s| s.parse::<IpAddr>().ok())
+            .next_back()
+            .ok_or(tower_governor::errors::GovernorError::UnableToExtractKey)
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use axum::http::HeaderValue;
+    use axum::http::{HeaderMap, HeaderValue};
+    use tower_governor::{errors::GovernorError, key_extractor::KeyExtractor};
     pub const TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS: &str = "2x00000000000000000000BB";
 
     #[tokio::test]
@@ -321,5 +358,127 @@ pub mod tests {
             !is_vercel_preview_domain(&HeaderValue::from_bytes(b"invalid\xFF").unwrap()),
             "Should reject invalid UTF-8"
         );
+    }
+
+    #[test]
+    fn test_rightmost_forwarded_ip_extractor() {
+        let extractor = RightmostXForwardedForIpExtractor;
+
+        // Test case 1: Valid X-Forwarded-For with multiple IPs
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Forwarded-For",
+            HeaderValue::from_static(
+                "203.0.113.195, 2001:db8:85a3:8d3:1319:8a2e:370:7348, 198.51.100.178",
+            ),
+        );
+        let req = Request::builder()
+            .header("X-Forwarded-For", headers.get("X-Forwarded-For").unwrap())
+            .body(())
+            .unwrap();
+        let result = extractor.extract(&req);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().to_string(), "198.51.100.178");
+
+        // Test case 2: Valid X-Forwarded-For with single IP
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Forwarded-For", HeaderValue::from_static("203.0.113.195"));
+        let req = Request::builder()
+            .header("X-Forwarded-For", headers.get("X-Forwarded-For").unwrap())
+            .body(())
+            .unwrap();
+        let result = extractor.extract(&req);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().to_string(), "203.0.113.195");
+
+        // Test case 3: Missing X-Forwarded-For header
+        let req = Request::builder().body(()).unwrap();
+        let result = extractor.extract(&req);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            GovernorError::UnableToExtractKey
+        ));
+
+        // Test case 4: Invalid IP address format
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Forwarded-For",
+            HeaderValue::from_static("not.an.ip.address"),
+        );
+        let req = Request::builder()
+            .header("X-Forwarded-For", headers.get("X-Forwarded-For").unwrap())
+            .body(())
+            .unwrap();
+        let result = extractor.extract(&req);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            GovernorError::UnableToExtractKey
+        ));
+
+        // Test case 5: Mixed valid and invalid IPs (should get last valid one)
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Forwarded-For",
+            HeaderValue::from_static("203.0.113.195, invalid.ip, 198.51.100.178"),
+        );
+        let req = Request::builder()
+            .header("X-Forwarded-For", headers.get("X-Forwarded-For").unwrap())
+            .body(())
+            .unwrap();
+        let result = extractor.extract(&req);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().to_string(), "198.51.100.178");
+
+        // Test case 6: Invalid UTF-8 in header
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Forwarded-For", HeaderValue::from_bytes(&[0xFF]).unwrap());
+        let req = Request::builder()
+            .header("X-Forwarded-For", headers.get("X-Forwarded-For").unwrap())
+            .body(())
+            .unwrap();
+        let result = extractor.extract(&req);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            GovernorError::UnableToExtractKey
+        ));
+
+        // Test case 7: Empty header value
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Forwarded-For", HeaderValue::from_static(""));
+        let req = Request::builder()
+            .header("X-Forwarded-For", headers.get("X-Forwarded-For").unwrap())
+            .body(())
+            .unwrap();
+        let result = extractor.extract(&req);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            GovernorError::UnableToExtractKey
+        ));
+
+        // Test case 8: Header with leading empty value
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Forwarded-For", HeaderValue::from_static(", 1.2.3.4"));
+        let req = Request::builder()
+            .header("X-Forwarded-For", headers.get("X-Forwarded-For").unwrap())
+            .body(())
+            .unwrap();
+        let result = extractor.extract(&req);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().to_string(), "1.2.3.4");
+
+        // Test case 9: Lowercase header name should work too
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("5.6.7.8"));
+        let req = Request::builder()
+            .header("x-forwarded-for", headers.get("x-forwarded-for").unwrap())
+            .body(())
+            .unwrap();
+        let result = extractor.extract(&req);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().to_string(), "5.6.7.8");
     }
 }
