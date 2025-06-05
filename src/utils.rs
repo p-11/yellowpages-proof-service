@@ -11,7 +11,6 @@ use pq_address::DecodedAddress as DecodedPqAddress;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
-use tower_governor::key_extractor::KeyExtractor;
 
 // Cloudflare Turnstile constants
 const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
@@ -257,7 +256,7 @@ impl tower_governor::key_extractor::KeyExtractor for RightmostForwardedIpExtract
 pub mod tests {
     use super::*;
     use axum::http::{HeaderMap, HeaderValue};
-    use tower_governor::errors::GovernorError;
+    use tower_governor::{errors::GovernorError, key_extractor::KeyExtractor};
     pub const TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS: &str = "2x00000000000000000000BB";
 
     #[tokio::test]
@@ -459,5 +458,16 @@ pub mod tests {
             result.unwrap_err(),
             GovernorError::UnableToExtractKey
         ));
+
+        // Test case 8: Header with leading empty value
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static(", 1.2.3.4"));
+        let req = Request::builder()
+            .header("x-forwarded-for", headers.get("x-forwarded-for").unwrap())
+            .body(())
+            .unwrap();
+        let result = extractor.extract(&req);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().to_string(), "1.2.3.4");
     }
 }
