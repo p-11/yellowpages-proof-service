@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tower::{ServiceBuilder, buffer::BufferLayer, limit::RateLimitLayer, load_shed::LoadShedLayer};
 use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
-use utils::{RightmostForwardedIpExtractor, validate_cloudflare_turnstile_token};
+use utils::{RightmostXForwardedForIpExtractor, validate_cloudflare_turnstile_token};
 
 const GLOBAL_RATE_LIMIT_REQS_PER_MIN: u64 = 1_000; // 1,000 requests per minute
 // A Turnstile token can have up to 2048 characters: https://developers.cloudflare.com/turnstile/get-started/server-side-validation/
@@ -75,7 +75,7 @@ async fn main() {
         GovernorConfigBuilder::default()
             .per_second(2)
             .burst_size(10)
-            .key_extractor(RightmostForwardedIpExtractor)
+            .key_extractor(RightmostXForwardedForIpExtractor)
             .finish()
             .unwrap(),
     );

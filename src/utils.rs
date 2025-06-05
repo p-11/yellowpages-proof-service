@@ -221,9 +221,9 @@ pub fn is_vercel_preview_domain(origin: &HeaderValue) -> bool {
 /// A KeyExtractor that uses the rightmost (last) IP address from the X-Forwarded-For header.
 /// Returns an error if the header is not present or invalid, as we expect this header to always be present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RightmostForwardedIpExtractor;
+pub struct RightmostXForwardedForIpExtractor;
 
-impl tower_governor::key_extractor::KeyExtractor for RightmostForwardedIpExtractor {
+impl tower_governor::key_extractor::KeyExtractor for RightmostXForwardedForIpExtractor {
     type Key = IpAddr;
 
     fn extract<T>(
@@ -362,7 +362,7 @@ pub mod tests {
 
     #[test]
     fn test_rightmost_forwarded_ip_extractor() {
-        let extractor = RightmostForwardedIpExtractor;
+        let extractor = RightmostXForwardedForIpExtractor;
 
         // Test case 1: Valid X-Forwarded-For with multiple IPs
         let mut headers = HeaderMap::new();
