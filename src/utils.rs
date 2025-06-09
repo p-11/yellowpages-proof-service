@@ -6,6 +6,7 @@ use axum::{
     http::StatusCode as HttpStatusCode,
     http::request::Request,
 };
+use base64::{Engine, engine::general_purpose::STANDARD as base64};
 use bitcoin::Address as BitcoinAddress;
 use pq_address::DecodedAddress as DecodedPqAddress;
 use reqwest::Client;
@@ -26,6 +27,11 @@ pub struct UploadProofRequest {
     pub slh_dsa_sha2_s_128_address: String,
     pub version: String,
     pub proof: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AttestationRequest {
+    pub challenge: String,
 }
 /// Response from Cloudflare Turnstile verification
 #[derive(Deserialize)]
@@ -250,6 +256,43 @@ impl tower_governor::key_extractor::KeyExtractor for RightmostXForwardedForIpExt
             .next_back()
             .ok_or(tower_governor::errors::GovernorError::UnableToExtractKey)
     }
+}
+
+/// Requests an attestation document from the attestation service
+pub async fn request_attestation_doc(user_data: String) -> Result<String, WsCloseCode> {
+    let client = Client::new();
+
+    // Create the attestation request
+    let request_body = AttestationRequest {
+        challenge: user_data,
+    };
+
+    // Send request to the attestation endpoint
+    let response = ok_or_internal_error!(
+        client
+            .post("http://127.0.0.1:9999/attestation-doc")
+            .json(&request_body)
+            .send()
+            .await,
+        "Failed to fetch attestation document from endpoint"
+    );
+
+    // Check if the request was successful
+    if !response.status().is_success() {
+        internal_error!(
+            "Attestation service returned non-200 status: {}",
+            response.status()
+        );
+    }
+
+    // Extract the attestation document as bytes
+    let attestation_bytes = ok_or_internal_error!(
+        response.bytes().await,
+        "Failed to read attestation document bytes from response"
+    );
+
+    // Base64 encode the attestation document
+    Ok(base64.encode(attestation_bytes))
 }
 
 #[cfg(test)]

@@ -16,9 +16,10 @@ use futures_util::{SinkExt, StreamExt};
 use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, SharedKey, kem::Decapsulate};
 
 use pq_channel::AES_GCM_NONCE_LENGTH;
-use prove::{AttestationDocUserData, AttestationRequest, ProofRequest};
+use prove::{ProofAttestationDocUserData, ProofRequest};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use serial_test::serial;
+use utils::AttestationRequest;
 
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
@@ -40,7 +41,8 @@ fn mock_attestation_handler(
         return (StatusCode::BAD_REQUEST, "Invalid base64 in challenge").into_response();
     };
 
-    let Ok(decoded_data): Result<AttestationDocUserData, _> = serde_json::from_str(&decoded_json)
+    let Ok(decoded_data): Result<ProofAttestationDocUserData, _> =
+        serde_json::from_str(&decoded_json)
     else {
         return (StatusCode::BAD_REQUEST, "Invalid JSON in challenge").into_response();
     };

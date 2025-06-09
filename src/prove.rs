@@ -1,9 +1,8 @@
 // mod websocket;
 
-use crate::utils::upload_to_data_layer;
+use crate::utils::{request_attestation_doc, upload_to_data_layer};
 use crate::{
-    bad_request, config::Config, internal_error, ok_or_bad_request, ok_or_internal_error,
-    pq_channel::WsCloseCode,
+    bad_request, config::Config, ok_or_bad_request, ok_or_internal_error, pq_channel::WsCloseCode,
 };
 use axum::extract::ws::close_code;
 use base64::{Engine, engine::general_purpose::STANDARD as base64};
@@ -19,25 +18,19 @@ use pq_address::{
     DecodedAddress as DecodedPqAddress, PubKeyType as PqPubKeyType,
     decode_address as decode_pq_address,
 };
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use slh_dsa::{Sha2_128s, Signature as SlhDsaSignature, VerifyingKey as SlhDsaVerifyingKey};
 use std::str::FromStr;
 
 #[derive(Serialize, Deserialize)]
-pub struct AttestationRequest {
-    pub challenge: String,
-}
-
-#[derive(Serialize, Deserialize)]
 #[allow(clippy::struct_field_names)]
-pub struct AttestationDocUserData {
+pub struct ProofAttestationDocUserData {
     pub bitcoin_address: String,
     pub ml_dsa_44_address: String,
     pub slh_dsa_sha2_s_128_address: String,
 }
 
-impl AttestationDocUserData {
+impl ProofAttestationDocUserData {
     fn encode(&self) -> Result<String, serde_json::Error> {
         // Serialize to JSON and base64 encode
         let user_data_json = serde_json::to_string(self)?;
@@ -525,10 +518,8 @@ async fn embed_addresses_in_proof(
     ml_dsa_44_address: &DecodedPqAddress,
     slh_dsa_sha2_s_128_address: &DecodedPqAddress,
 ) -> Result<String, WsCloseCode> {
-    let client = Client::new();
-
     // Create and encode the user data struct
-    let user_data = AttestationDocUserData {
+    let user_data = ProofAttestationDocUserData {
         bitcoin_address: bitcoin_address.to_string(),
         ml_dsa_44_address: ml_dsa_44_address.to_string(),
         slh_dsa_sha2_s_128_address: slh_dsa_sha2_s_128_address.to_string(),
@@ -536,37 +527,8 @@ async fn embed_addresses_in_proof(
 
     let user_data_base64 = ok_or_internal_error!(user_data.encode(), "Failed to encode user data");
 
-    // Create the attestation request
-    let request_body = AttestationRequest {
-        challenge: user_data_base64,
-    };
-
-    // Send request to the attestation endpoint
-    let response = ok_or_internal_error!(
-        client
-            .post("http://127.0.0.1:9999/attestation-doc")
-            .json(&request_body)
-            .send()
-            .await,
-        "Failed to fetch attestation document from endpoint"
-    );
-
-    // Check if the request was successful
-    if !response.status().is_success() {
-        internal_error!(
-            "Attestation service returned non-200 status: {}",
-            response.status()
-        );
-    }
-
-    // Extract the attestation document as bytes
-    let attestation_bytes = ok_or_internal_error!(
-        response.bytes().await,
-        "Failed to read attestation document bytes from response"
-    );
-
-    // Base64 encode the attestation document
-    Ok(base64.encode(attestation_bytes))
+    // Request attestation document
+    request_attestation_doc(user_data_base64).await
 }
 
 #[cfg(test)]
@@ -1216,7 +1178,7 @@ mod tests {
     #[test]
     fn test_user_data_encoding() {
         // Create and encode user data
-        let user_data = AttestationDocUserData {
+        let user_data = ProofAttestationDocUserData {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
@@ -1227,7 +1189,8 @@ mod tests {
 
         // Verify we can decode it back
         let decoded_json = String::from_utf8(base64.decode(user_data_base64).unwrap()).unwrap();
-        let decoded_data: AttestationDocUserData = serde_json::from_str(&decoded_json).unwrap();
+        let decoded_data: ProofAttestationDocUserData =
+            serde_json::from_str(&decoded_json).unwrap();
 
         // Verify the values match
         assert_eq!(decoded_data.bitcoin_address, VALID_BITCOIN_ADDRESS_P2PKH);
@@ -1244,7 +1207,7 @@ mod tests {
         // https://github.com/aws/aws-nitro-enclaves-nsm-api/blob/main/docs/attestation_process.md#22-attestation-document-specification
         const MAX_ENCODED_USER_DATA: usize = 1024;
         // Create and encode user data
-        let user_data = AttestationDocUserData {
+        let user_data = ProofAttestationDocUserData {
             bitcoin_address: VALID_BITCOIN_ADDRESS_P2PKH.to_string(),
             ml_dsa_44_address: VALID_ML_DSA_44_ADDRESS.to_string(),
             slh_dsa_sha2_s_128_address: VALID_SLH_DSA_SHA2_128_ADDRESS.to_string(),
