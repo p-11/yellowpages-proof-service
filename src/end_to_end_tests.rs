@@ -324,6 +324,12 @@ async fn perform_correct_client_handshake(
             "Ciphertext should not be empty"
         );
 
+        // Verify the response contains an attestation doc
+        assert!(
+            !handshake_response.auth_attestation_doc.is_empty(),
+            "Attestation doc field should not be empty"
+        );
+
         // Decrypt the ciphertext to get the shared secret
         let ciphertext_bytes = base64
             .decode(&handshake_response.ml_kem_768_ciphertext)
