@@ -102,8 +102,9 @@ pub async fn run_pq_channel_protocol(mut socket: WebSocket, config: Config) {
 /// 1. Receives an encapsulation key from the client
 /// 2. Validates the key format and size
 /// 3. Generates a shared secret and ciphertext using ML-KEM-768
-/// 4. Sends the ciphertext back to the client
-/// 5. Returns the shared secret for potential future use
+/// 4. Generates an attestation doc containing the ciphertext hash to authenticate with the client
+/// 5. Sends the ciphertext and attestation doc back to the client
+/// 6. Returns the shared secret for potential future use
 async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>, WsCloseCode> {
     // Wait for message with a timeout
     let receive_result = with_timeout!(HANDSHAKE_TIMEOUT_SECS, socket.recv(), "Handshake message");
