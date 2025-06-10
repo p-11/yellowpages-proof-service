@@ -19,7 +19,6 @@ use ml_kem::{
 };
 use rand::{SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
-use serde_json;
 use std::time::Duration;
 use tokio::time::timeout;
 
