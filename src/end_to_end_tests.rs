@@ -1,4 +1,4 @@
-use crate::pq_channel::WsCloseCode;
+use crate::pq_channel::{AuthAttestationDocUserData, WsCloseCode};
 use crate::utils::tests::TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS;
 use crate::*;
 use crate::{config::Environment, utils::UploadProofRequest};
@@ -41,26 +41,43 @@ fn mock_attestation_handler(
         return (StatusCode::BAD_REQUEST, "Invalid base64 in challenge").into_response();
     };
 
-    let Ok(decoded_data): Result<ProofAttestationDocUserData, _> =
-        serde_json::from_str(&decoded_json)
-    else {
-        return (StatusCode::BAD_REQUEST, "Invalid JSON in challenge").into_response();
-    };
-
-    // Verify the addresses match what we expect
-    if decoded_data.bitcoin_address != expected_bitcoin_address
-        || decoded_data.ml_dsa_44_address != expected_ml_dsa_44_address
-        || decoded_data.slh_dsa_sha2_s_128_address != expected_slh_dsa_sha2_s_128_address
-    {
-        return (StatusCode::BAD_REQUEST, "Address mismatch in challenge").into_response();
+    // First try to parse as an auth attestation request
+    if let Ok(auth_data) = serde_json::from_str::<AuthAttestationDocUserData>(&decoded_json) {
+        // Verify the ciphertext hash is a valid base64 string of the right length
+        if let Ok(hash_bytes) = base64.decode(&auth_data.ml_kem_768_ciphertext_hash) {
+            if hash_bytes.len() == 32 {
+                // SHA256 hash is 32 bytes
+                // This is a valid auth attestation request
+                return (
+                    StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                    MOCK_ATTESTATION_DOCUMENT,
+                )
+                    .into_response();
+            }
+        }
     }
 
-    (
-        StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        MOCK_ATTESTATION_DOCUMENT,
-    )
-        .into_response()
+    // If not an auth request, try to parse as a proof attestation request
+    match serde_json::from_str::<ProofAttestationDocUserData>(&decoded_json) {
+        Ok(proof_data) => {
+            // Verify the addresses match what we expect
+            if proof_data.bitcoin_address != expected_bitcoin_address
+                || proof_data.ml_dsa_44_address != expected_ml_dsa_44_address
+                || proof_data.slh_dsa_sha2_s_128_address != expected_slh_dsa_sha2_s_128_address
+            {
+                return (StatusCode::BAD_REQUEST, "Address mismatch in challenge").into_response();
+            }
+
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                MOCK_ATTESTATION_DOCUMENT,
+            )
+                .into_response()
+        }
+        Err(_) => (StatusCode::BAD_REQUEST, "Invalid JSON in challenge").into_response(),
+    }
 }
 
 // Mock handler for data layer requests

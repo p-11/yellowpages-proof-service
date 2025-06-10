@@ -3,7 +3,7 @@ use crate::{
     config::Config,
     internal_error, ok_or_bad_request, ok_or_internal_error,
     prove::{ProofRequest, prove},
-    utils::send_close_frame,
+    utils::{request_attestation_doc, send_close_frame},
     with_timeout,
 };
 use aes_gcm::{
@@ -12,12 +12,14 @@ use aes_gcm::{
 };
 use axum::extract::ws::{Message as WsMessage, WebSocket, close_code};
 use base64::{Engine, engine::general_purpose::STANDARD as base64};
+use bitcoin::hashes::{Hash, sha256};
 use ml_kem::{
     Ciphertext, Encoded, EncodedSizeUser, MlKem768, MlKem768Params, SharedKey,
     kem::{Encapsulate, EncapsulationKey},
 };
 use rand::{SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
+use serde_json;
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -54,6 +56,12 @@ pub struct HandshakeMessage {
 #[derive(Serialize, Deserialize)]
 pub struct HandshakeResponse {
     pub ml_kem_768_ciphertext: String, // Base64-encoded ML-KEM ciphertext
+    pub auth_attestation_doc: String,  // Base64-encoded attestation document
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AuthAttestationDocUserData {
+    pub ml_kem_768_ciphertext_hash: String,
 }
 
 pub async fn run_pq_channel_protocol(mut socket: WebSocket, config: Config) {
@@ -163,12 +171,19 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
         return Err(close_code::ERROR);
     };
 
+    // Get attestation document for the ciphertext
+    let auth_attestation_doc = ok_or_internal_error!(
+        generate_auth_attestation_doc(&ciphertext).await,
+        "Failed to get attestation document for handshake"
+    );
+
     // Encode the ciphertext to base64
     let ciphertext_base64 = base64.encode(ciphertext);
 
     // Create and send the response
     let handshake_response = HandshakeResponse {
         ml_kem_768_ciphertext: ciphertext_base64,
+        auth_attestation_doc,
     };
 
     let response_json = ok_or_internal_error!(
@@ -185,6 +200,27 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
 
     // Return the shared secret directly
     Ok(shared_secret)
+}
+
+/// Generates an attestation document which can be used to authenticate the TEE with the user.
+/// The attestation document's user data will contain the base64-encoded SHA256 hash of the ML-KEM ciphertext.
+async fn generate_auth_attestation_doc(ciphertext_bytes: &[u8]) -> Result<String, WsCloseCode> {
+    // Calculate SHA256 hash of ciphertext bytes
+    let hash = sha256::Hash::hash(ciphertext_bytes);
+
+    // Create the user data struct with base64-encoded hash
+    let user_data = AuthAttestationDocUserData {
+        ml_kem_768_ciphertext_hash: base64.encode(hash),
+    };
+
+    // Serialize to JSON and base64 encode
+    let user_data_base64 = ok_or_internal_error!(
+        serde_json::to_string(&user_data).map(|json| base64.encode(json.as_bytes())),
+        "Failed to encode auth attestation user data"
+    );
+
+    // Request attestation document
+    request_attestation_doc(user_data_base64).await
 }
 
 /// Receives and validates an AES-256-GCM encrypted proof request from the WebSocket
