@@ -1,5 +1,5 @@
 use crate::config::{Config, Environment};
-use crate::pq_channel::WsCloseCode;
+use crate::pq_channel::{MAX_REGISTRATIONS_EXCEEDED, WsCloseCode};
 use axum::{
     extract::ws::{CloseFrame, Message as WsMessage, WebSocket, close_code},
     http::HeaderValue,
@@ -134,23 +134,43 @@ pub async fn upload_to_data_layer(
     };
 
     // Send request to data layer
-    let response = ok_or_internal_error!(
-        client
-            .post(format!("{data_layer_url}/v1/proofs"))
-            .header("x-api-key", data_layer_api_key)
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await,
-        "Failed to send request to data layer"
-    );
+    let response = match client
+        .post(format!("{data_layer_url}/v1/proofs"))
+        .header("x-api-key", data_layer_api_key)
+        .header("Content-Type", "application/json")
+        .json(&request)
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            log::error!("Failed to send request to data layer: {e}");
+            return Err(close_code::ERROR);
+        }
+    };
 
     // Check if the request was successful
     if !response.status().is_success() {
-        internal_error!(
-            "Data layer returned non-success status: {}",
-            response.status()
-        );
+        // Store the status code before consuming the response
+        let status = response.status();
+
+        // Get the error response body
+        let error_body = match response.text().await {
+            Ok(body) => body,
+            Err(e) => {
+                log::error!("Failed to read error response from data layer: {e}");
+                return Err(close_code::ERROR);
+            }
+        };
+
+        // Check if this is the specific error we're looking for
+        if error_body.contains("Proof count for BTC address exceeds limit") {
+            log::error!("Maximum proof registrations exceeded for BTC address");
+            return Err(MAX_REGISTRATIONS_EXCEEDED);
+        }
+
+        log::error!("Data layer returned non-success status: {status} with body: {error_body}");
+        return Err(close_code::ERROR);
     }
 
     Ok(())
@@ -298,9 +318,120 @@ pub async fn request_attestation_doc(user_data: String) -> Result<String, WsClos
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::fixtures::*;
     use axum::http::{HeaderMap, HeaderValue};
+    use bitcoin::{Address as BitcoinAddress, Network};
+    use pq_address::decode_address as decode_pq_address;
+    use std::str::FromStr;
     use tower_governor::{errors::GovernorError, key_extractor::KeyExtractor};
+
     pub const TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS: &str = "2x00000000000000000000BB";
+
+    // Test helper function to set up common test infrastructure
+    async fn setup_upload_test() -> (
+        mockito::ServerGuard,
+        BitcoinAddress,
+        DecodedPqAddress,
+        DecodedPqAddress,
+    ) {
+        let server = mockito::Server::new_async().await;
+        let bitcoin_address = BitcoinAddress::from_str(VALID_BITCOIN_ADDRESS_P2PKH)
+            .unwrap()
+            .require_network(Network::Bitcoin)
+            .unwrap();
+        let ml_dsa_44_address = decode_pq_address(VALID_ML_DSA_44_ADDRESS).unwrap();
+        let slh_dsa_sha2_s_128_address = decode_pq_address(VALID_SLH_DSA_SHA2_128_ADDRESS).unwrap();
+
+        (
+            server,
+            bitcoin_address,
+            ml_dsa_44_address,
+            slh_dsa_sha2_s_128_address,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_upload_to_data_layer_successful() {
+        let (mut server, bitcoin_address, ml_dsa_44_address, slh_dsa_sha2_s_128_address) =
+            setup_upload_test().await;
+
+        let _m = server
+            .mock("POST", "/v1/proofs")
+            .match_header("x-api-key", "test-key")
+            .match_header("content-type", "application/json")
+            .with_status(200)
+            .with_body("")
+            .create();
+
+        let res = upload_to_data_layer(
+            &bitcoin_address,
+            &ml_dsa_44_address,
+            &slh_dsa_sha2_s_128_address,
+            "ZmFrZV9hdHRlc3RhdGlvbg==",
+            "v1.0.0",
+            server.url().to_string().as_str(),
+            "test-key",
+        )
+        .await;
+
+        assert!(res.is_ok(), "expected Ok(()), got {res:?}");
+    }
+
+    #[tokio::test]
+    async fn test_upload_to_data_layer_max_registrations_exceeded() {
+        let (mut server, bitcoin_address, ml_dsa_44_address, slh_dsa_sha2_s_128_address) =
+            setup_upload_test().await;
+
+        let _m = server
+            .mock("POST", "/v1/proofs")
+            .match_header("x-api-key", "test-key")
+            .match_header("content-type", "application/json")
+            .with_status(400)
+            .with_body("{\"error\": \"Proof count for BTC address exceeds limit\"}")
+            .create();
+
+        let res = upload_to_data_layer(
+            &bitcoin_address,
+            &ml_dsa_44_address,
+            &slh_dsa_sha2_s_128_address,
+            "ZmFrZV9hdHRlc3RhdGlvbg==",
+            "v1.0.0",
+            server.url().to_string().as_str(),
+            "test-key",
+        )
+        .await;
+
+        assert!(res.is_err(), "expected Err, got {res:?}");
+        assert_eq!(res.unwrap_err(), MAX_REGISTRATIONS_EXCEEDED);
+    }
+
+    #[tokio::test]
+    async fn test_upload_to_data_layer_other_error() {
+        let (mut server, bitcoin_address, ml_dsa_44_address, slh_dsa_sha2_s_128_address) =
+            setup_upload_test().await;
+
+        let _m = server
+            .mock("POST", "/v1/proofs")
+            .match_header("x-api-key", "test-key")
+            .match_header("content-type", "application/json")
+            .with_status(500)
+            .with_body("Something bad happened")
+            .create();
+
+        let res = upload_to_data_layer(
+            &bitcoin_address,
+            &ml_dsa_44_address,
+            &slh_dsa_sha2_s_128_address,
+            "ZmFrZV9hdHRlc3RhdGlvbg==",
+            "v1.0.0",
+            server.url().to_string().as_str(),
+            "test-key",
+        )
+        .await;
+
+        assert!(res.is_err(), "expected Err, got {res:?}");
+        assert_eq!(res.unwrap_err(), close_code::ERROR);
+    }
 
     #[tokio::test]
     async fn test_validate_turnstile_development_dummy_token() {

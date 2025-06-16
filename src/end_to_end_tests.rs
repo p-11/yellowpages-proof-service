@@ -21,10 +21,10 @@ use rand::{RngCore, SeedableRng, rngs::StdRng};
 use serial_test::serial;
 use utils::AttestationRequest;
 
+use fixtures::*;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
 use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest, tungstenite::http};
-use fixtures::*;
 
 // Add a constant for our mock attestation document
 const MOCK_ATTESTATION_DOCUMENT: &[u8] = b"mock_attestation_document_bytes";
