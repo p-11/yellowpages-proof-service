@@ -134,20 +134,16 @@ pub async fn upload_to_data_layer(
     };
 
     // Send request to data layer
-    let response = match client
-        .post(format!("{data_layer_url}/v1/proofs"))
-        .header("x-api-key", data_layer_api_key)
-        .header("Content-Type", "application/json")
-        .json(&request)
-        .send()
-        .await
-    {
-        Ok(resp) => resp,
-        Err(e) => {
-            log::error!("Failed to send request to data layer: {e}");
-            return Err(close_code::ERROR);
-        }
-    };
+    let response = ok_or_internal_error!(
+        client
+            .post(format!("{data_layer_url}/v1/proofs"))
+            .header("x-api-key", data_layer_api_key)
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await,
+        "Failed to send request to data layer"
+    );
 
     // Check if the request was successful
     if !response.status().is_success() {
@@ -155,13 +151,10 @@ pub async fn upload_to_data_layer(
         let status = response.status();
 
         // Get the error response body
-        let error_body = match response.text().await {
-            Ok(body) => body,
-            Err(e) => {
-                log::error!("Failed to read error response from data layer: {e}");
-                return Err(close_code::ERROR);
-            }
-        };
+        let error_body = ok_or_internal_error!(
+            response.text().await,
+            "Failed to read error response from data layer"
+        );
 
         // Check if this is the specific error we're looking for
         if error_body.contains("Proof count for BTC address exceeds limit") {
