@@ -1,6 +1,8 @@
 mod config;
 #[cfg(test)]
 mod end_to_end_tests;
+#[cfg(test)]
+mod fixtures;
 mod pq_channel;
 mod prove;
 mod utils;
