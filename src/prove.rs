@@ -536,7 +536,7 @@ mod tests {
     use super::*;
     use crate::config::{Environment, tests::test_config};
 
-    use crate::end_to_end_tests::*;
+    use crate::fixtures::*;
     use crate::utils::tests::TURNSTILE_TEST_SECRET_KEY_ALWAYS_BLOCKS;
 
     use ml_dsa::{KeyGen, signature::Signer};
