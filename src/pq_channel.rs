@@ -3,7 +3,7 @@ use crate::{
     config::Config,
     internal_error, ok_or_bad_request, ok_or_internal_error,
     prove::{ProofRequest, prove},
-    utils::send_close_frame,
+    utils::{request_attestation_doc, send_close_frame},
     with_timeout,
 };
 use aes_gcm::{
@@ -12,6 +12,7 @@ use aes_gcm::{
 };
 use axum::extract::ws::{Message as WsMessage, WebSocket, close_code};
 use base64::{Engine, engine::general_purpose::STANDARD as base64};
+use bitcoin::hashes::{Hash, sha256};
 use ml_kem::{
     Ciphertext, Encoded, EncodedSizeUser, MlKem768, MlKem768Params, SharedKey,
     kem::{Encapsulate, EncapsulationKey},
@@ -33,6 +34,7 @@ const PROOF_REQUEST_TIMEOUT_SECS: u64 = 30; // 30 seconds for proof submission
 
 // Custom close code in the private range 4000-4999
 const TIMEOUT_CLOSE_CODE: u16 = 4000; // Custom code for timeout errors
+pub const MAX_REGISTRATIONS_EXCEEDED: u16 = 4001; // Custom close code for max registrations exceeded
 
 // Constants for AES-GCM
 pub const AES_GCM_NONCE_LENGTH: usize = 12; // length in bytes
@@ -54,6 +56,12 @@ pub struct HandshakeMessage {
 #[derive(Serialize, Deserialize)]
 pub struct HandshakeResponse {
     pub ml_kem_768_ciphertext: String, // Base64-encoded ML-KEM ciphertext
+    pub auth_attestation_doc: String,  // Base64-encoded attestation document
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AuthAttestationDocUserData {
+    pub ml_kem_768_ciphertext_hash: String,
 }
 
 pub async fn run_pq_channel_protocol(mut socket: WebSocket, config: Config) {
@@ -94,8 +102,9 @@ pub async fn run_pq_channel_protocol(mut socket: WebSocket, config: Config) {
 /// 1. Receives an encapsulation key from the client
 /// 2. Validates the key format and size
 /// 3. Generates a shared secret and ciphertext using ML-KEM-768
-/// 4. Sends the ciphertext back to the client
-/// 5. Returns the shared secret for potential future use
+/// 4. Generates an attestation doc containing the ciphertext hash to authenticate with the client
+/// 5. Sends the ciphertext and attestation doc back to the client
+/// 6. Returns the shared secret for potential future use
 async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>, WsCloseCode> {
     // Wait for message with a timeout
     let receive_result = with_timeout!(HANDSHAKE_TIMEOUT_SECS, socket.recv(), "Handshake message");
@@ -163,12 +172,19 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
         return Err(close_code::ERROR);
     };
 
+    // Get attestation document for the ciphertext
+    let auth_attestation_doc = ok_or_internal_error!(
+        generate_auth_attestation_doc(&ciphertext).await,
+        "Failed to get attestation document for handshake"
+    );
+
     // Encode the ciphertext to base64
     let ciphertext_base64 = base64.encode(ciphertext);
 
     // Create and send the response
     let handshake_response = HandshakeResponse {
         ml_kem_768_ciphertext: ciphertext_base64,
+        auth_attestation_doc,
     };
 
     let response_json = ok_or_internal_error!(
@@ -185,6 +201,27 @@ async fn perform_handshake(socket: &mut WebSocket) -> Result<SharedKey<MlKem768>
 
     // Return the shared secret directly
     Ok(shared_secret)
+}
+
+/// Generates an attestation document which can be used to authenticate the TEE with the user.
+/// The attestation document's user data will contain the base64-encoded SHA256 hash of the ML-KEM ciphertext.
+async fn generate_auth_attestation_doc(ciphertext_bytes: &[u8]) -> Result<String, WsCloseCode> {
+    // Calculate SHA256 hash of ciphertext bytes
+    let hash = sha256::Hash::hash(ciphertext_bytes);
+
+    // Create the user data struct with base64-encoded hash
+    let user_data = AuthAttestationDocUserData {
+        ml_kem_768_ciphertext_hash: base64.encode(hash),
+    };
+
+    // Serialize to JSON and base64 encode
+    let user_data_base64 = ok_or_internal_error!(
+        serde_json::to_string(&user_data).map(|json| base64.encode(json.as_bytes())),
+        "Failed to encode auth attestation user data"
+    );
+
+    // Request attestation document
+    request_attestation_doc(user_data_base64).await
 }
 
 /// Receives and validates an AES-256-GCM encrypted proof request from the WebSocket
