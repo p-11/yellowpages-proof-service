@@ -89,6 +89,7 @@ jobs:
 
       - name: Check Evervault CLI integrity
         run: |
+          # Hash can be found here: https://github.com/evervault/evervault-cli/actions/runs/15731614726
           EXPECTED_HASH="d7caeb26b1abb3e9ee4c73006d93c2da4f1c950367fceb9f58dd896f2c6f5fe0"
           # Download the script
           curl -s https://cli.evervault.com/v4/4.4.1/install -o ev_install.sh
