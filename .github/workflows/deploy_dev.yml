@@ -80,6 +80,24 @@ jobs:
       - name: Run Rust tests
         run: cargo test
 
+      - name: Check Evervault CLI integrity
+        run: |
+          EXPECTED_HASH="d7caeb26b1abb3e9ee4c73006d93c2da4f1c950367fceb9f58dd896f2c6f5fe0"
+          # Download the script
+          curl -s https://cli.evervault.com/v4/4.4.1/install -o ev_install.sh
+          # Calculate hash of downloaded file
+          ACTUAL_HASH=$(shasum -a 256 ev_install.sh | cut -d ' ' -f 1)
+          echo "Actual hash:   $ACTUAL_HASH"
+          echo "Expected hash: $EXPECTED_HASH"
+          if [ "$ACTUAL_HASH" = "$EXPECTED_HASH" ]; then
+              echo "✅ Hash verification successful!"
+              chmod +x ev_install.sh
+          else
+              echo "❌ Hash verification failed!"
+              rm ev_install.sh
+              exit 1
+          fi
+
       - name: Deploy Enclave
         env:
           EV_API_KEY: ${{ env.EV_API_KEY }}
@@ -90,8 +108,8 @@ jobs:
         run: |
           # fail fast if any part of the pipe errors
           set -eo pipefail
-          # install the CLI
-          curl https://cli.evervault.com/v4/install -sL | sh
+          # install the CLI using verified script
+          ./ev_install.sh
           # write cert + key
           echo "$EV_ENCLAVE_SIGNING_CERT" > cert.pem
           echo "$EV_ENCLAVE_SIGNING_KEY"  > key.pem
