@@ -60,4 +60,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute to this 
 
 ## License
 
-This project is licensed under the <TODO>
+This project is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for more details.
