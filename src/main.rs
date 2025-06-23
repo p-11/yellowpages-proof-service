@@ -67,16 +67,19 @@ async fn main() {
         .into_inner();
 
     // /prove IP specific rate limiter
-    // Allow bursts with up to 10 requests per IP address
-    // and replenishes one token every two seconds
+    // Production: a single IP can make up to 3 requests, then needs to wait 5 minutes
+    // Development: a single IP can make up to 10 requests, then needs to wait 2 seconds
+    let (per_second_interval, burst_size) = match config.environment {
+        config::Environment::Production => (300, 3),
+        config::Environment::Development => (2, 10),
+    };
+
     // We Box it because Axum 0.6 requires all Layers to be Clone
     // and thus we need a static reference to it
-    // This means a single IP can make 10 requests in 2 seconds
-    // but then has to wait 2 seconds for the next request
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(2)
-            .burst_size(10)
+            .per_second(per_second_interval)
+            .burst_size(burst_size)
             .key_extractor(RightmostXForwardedForIpExtractor)
             .finish()
             .unwrap(),
