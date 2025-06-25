@@ -26,7 +26,7 @@ use tower::{ServiceBuilder, buffer::BufferLayer, limit::RateLimitLayer, load_she
 use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use utils::{RightmostXForwardedForIpExtractor, validate_cloudflare_turnstile_token};
 
-const GLOBAL_RATE_LIMIT_REQS_PER_MIN: u64 = 1_000; // 1,000 requests per minute
+const GLOBAL_RATE_LIMIT_REQS_PER_MIN: u64 = 300; // 300 requests per minute
 // A Turnstile token can have up to 2048 characters: https://developers.cloudflare.com/turnstile/get-started/server-side-validation/
 const MAX_TURNSTILE_TOKEN_LENGTH: usize = 2048;
 
