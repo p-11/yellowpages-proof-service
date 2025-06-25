@@ -136,6 +136,13 @@ jobs:
                   pcr_8:              .measurements.PCR8
                 }' > pcrs.json
 
+          # START DEBUG
+          echo "Raw output from ev enclave build:"
+          cat raw.json | jq '.'
+          echo -e "\nTransformed PCRs JSON:"
+          cat pcrs.json | jq '.'
+          # END DEBUG
+
       - name: Upload PCRs & version to the YP Data Service
         env:
           YP_DS_API_URL: ${{ env.YP_DS_API_URL }}
