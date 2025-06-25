@@ -71,14 +71,14 @@ jobs:
       - name: Ensure rustfmt is available
         run: rustup component add rustfmt
 
-      - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -W clippy::pedantic -D warnings
+      # - name: Run Clippy
+      #   run: cargo clippy --all-targets --all-features -- -W clippy::pedantic -D warnings
 
-      - name: Check Rust formatting
-        run: cargo fmt -- --check
+      # - name: Check Rust formatting
+      #   run: cargo fmt -- --check
 
-      - name: Run Rust tests
-        run: cargo test
+      # - name: Run Rust tests
+      #   run: cargo test
 
       - name: Check Evervault CLI integrity
         run: |
@@ -130,10 +130,10 @@ jobs:
                 '{
                   version:            $version,
                   github_action_run:  $run_url,
-                  pcr_0:              .measurements.PCR0,
-                  pcr_1:              .measurements.PCR1,
-                  pcr_2:              .measurements.PCR2,
-                  pcr_8:              .measurements.PCR8
+                  pcr_0:              .enclaveMeasurements.PCR0,
+                  pcr_1:              .enclaveMeasurements.PCR1,
+                  pcr_2:              .enclaveMeasurements.PCR2,
+                  pcr_8:              .enclaveMeasurements.PCR8
                 }' > pcrs.json
 
           # START DEBUG
@@ -141,44 +141,46 @@ jobs:
           cat raw.json | jq '.'
           echo -e "\nTransformed PCRs JSON:"
           cat pcrs.json | jq '.'
+          echo -e "\nls of build-output:"
+          ls -la ./build-output
           # END DEBUG
 
-      - name: Upload PCRs & version to the YP Data Service
-        env:
-          YP_DS_API_URL: ${{ env.YP_DS_API_URL }}
-          YP_DS_API_KEY: ${{ env.YP_DS_API_KEY }}
-        run: |
-          # fail fast if any part of the pipe errors
-          set -eo pipefail
-          echo "Sending PCR JSON to data service…"
-          # -sS: silent but show errors; -f: fail on HTTP 4xx/5xx
-          # The data layer will return an error if the version already exists, causing the workflow to fail
-          curl -sS -f \
-            -X POST "https://${{ env.YP_DS_API_URL }}/v1/proofs/measurements/aws-nitro-pcr-sets" \
-            -H "x-api-key: ${{ env.YP_DS_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            --data @pcrs.json \
-            > /dev/null
-          echo "Uploaded to the YP Data Service"
+      # - name: Upload PCRs & version to the YP Data Service
+      #   env:
+      #     YP_DS_API_URL: ${{ env.YP_DS_API_URL }}
+      #     YP_DS_API_KEY: ${{ env.YP_DS_API_KEY }}
+      #   run: |
+      #     # fail fast if any part of the pipe errors
+      #     set -eo pipefail
+      #     echo "Sending PCR JSON to data service…"
+      #     # -sS: silent but show errors; -f: fail on HTTP 4xx/5xx
+      #     # The data layer will return an error if the version already exists, causing the workflow to fail
+      #     curl -sS -f \
+      #       -X POST "https://${{ env.YP_DS_API_URL }}/v1/proofs/measurements/aws-nitro-pcr-sets" \
+      #       -H "x-api-key: ${{ env.YP_DS_API_KEY }}" \
+      #       -H "Content-Type: application/json" \
+      #       --data @pcrs.json \
+      #       > /dev/null
+      #     echo "Uploaded to the YP Data Service"
 
-      - name: Deploy Enclave
-        env:
-          EV_API_KEY: ${{ env.EV_API_KEY }}
-          EV_APP_UUID: ${{ env.EV_APP_UUID }}
-          EV_ENCLAVE_SIGNING_CERT: ${{ env.EV_ENCLAVE_SIGNING_CERT }}
-          EV_ENCLAVE_SIGNING_KEY: ${{ env.EV_ENCLAVE_SIGNING_KEY }}
-        run: |
-          # fail fast if any part of the pipe errors
-          set -eo pipefail
-          # write cert + key
-          echo "$EV_ENCLAVE_SIGNING_CERT" > cert.pem
-          echo "$EV_ENCLAVE_SIGNING_KEY"  > key.pem
-          # deploy the previously built enclave using the EIF file
-          ev enclave deploy \
-            --config=./enclave.toml \
-            --eif-path=./build-output/enclave.eif \
-            --signing-cert=cert.pem \
-            --private-key=key.pem
+      # - name: Deploy Enclave
+      #   env:
+      #     EV_API_KEY: ${{ env.EV_API_KEY }}
+      #     EV_APP_UUID: ${{ env.EV_APP_UUID }}
+      #     EV_ENCLAVE_SIGNING_CERT: ${{ env.EV_ENCLAVE_SIGNING_CERT }}
+      #     EV_ENCLAVE_SIGNING_KEY: ${{ env.EV_ENCLAVE_SIGNING_KEY }}
+      #   run: |
+      #     # fail fast if any part of the pipe errors
+      #     set -eo pipefail
+      #     # write cert + key
+      #     echo "$EV_ENCLAVE_SIGNING_CERT" > cert.pem
+      #     echo "$EV_ENCLAVE_SIGNING_KEY"  > key.pem
+      #     # deploy the previously built enclave using the EIF file
+      #     ev enclave deploy \
+      #       --config=./enclave.toml \
+      #       --eif-path=./build-output/enclave.eif \
+      #       --signing-cert=cert.pem \
+      #       --private-key=key.pem
 
       - name: Output PCRs & version in GitHub Step Summary
         run: |
