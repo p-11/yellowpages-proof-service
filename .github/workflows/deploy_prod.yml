@@ -137,10 +137,10 @@ jobs:
                 '{
                   version:            $version,
                   github_action_run:  $run_url,
-                  pcr_0:              .measurements.PCR0,
-                  pcr_1:              .measurements.PCR1,
-                  pcr_2:              .measurements.PCR2,
-                  pcr_8:              .measurements.PCR8
+                  pcr_0:              .enclaveMeasurements.PCR0,
+                  pcr_1:              .enclaveMeasurements.PCR1,
+                  pcr_2:              .enclaveMeasurements.PCR2,
+                  pcr_8:              .enclaveMeasurements.PCR8
                 }' > pcrs.json
 
       - name: Upload PCRs & version to the YP Data Service
