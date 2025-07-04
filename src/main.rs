@@ -26,8 +26,7 @@ use tower::{ServiceBuilder, buffer::BufferLayer, limit::RateLimitLayer, load_she
 use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use utils::{RightmostXForwardedForIpExtractor, validate_cloudflare_turnstile_token};
 
-const PROD_GLOBAL_RATE_LIMIT_REQS_PER_MIN: u64 = 300; // 300 requests per minute
-const DEV_GLOBAL_RATE_LIMIT_REQS_PER_MIN: u64 = 1_000_000; // effectively no limit
+const GLOBAL_RATE_LIMIT_REQS_PER_MIN: u64 = 300; // 300 requests per minute
 // A Turnstile token can have up to 2048 characters: https://developers.cloudflare.com/turnstile/get-started/server-side-validation/
 const MAX_TURNSTILE_TOKEN_LENGTH: usize = 2048;
 
@@ -52,13 +51,7 @@ async fn main() {
 
     // /prove IP agnostic rate limiter - first line of defense
     // Bot nets etc can easily spin up multiple IPs
-    // In production: Limit to 300 requests per 60 seconds for new proofs
-    // In development: Effectively no rate limit
-    let global_rate_limit = match config.environment {
-        config::Environment::Production => PROD_GLOBAL_RATE_LIMIT_REQS_PER_MIN,
-        config::Environment::Development => DEV_GLOBAL_RATE_LIMIT_REQS_PER_MIN,
-    };
-
+    // Limit to GLOBAL_RATE_LIMIT_REQS_PER_MIN requests per 60 seconds for new proofs
     let general_rate_limiter = ServiceBuilder::new()
         // catch both buffer and shed errors
         .layer(HandleErrorLayer::new(handle_rate_limit_error))
@@ -68,17 +61,17 @@ async fn main() {
         .layer(LoadShedLayer::new())
         // either we are being DDoSed or we found product market fit
         .layer(RateLimitLayer::new(
-            global_rate_limit,
+            GLOBAL_RATE_LIMIT_REQS_PER_MIN,
             Duration::from_secs(60),
         ))
         .into_inner();
 
     // /prove IP specific rate limiter
     // Production: a single IP can make up to 3 requests, then needs to wait 5 minutes
-    // Development: effectively no rate limit (very high values)
+    // Development: a single IP can make up to 10 requests, then needs to wait 2 seconds
     let (per_second_interval, burst_size) = match config.environment {
         config::Environment::Production => (300, 3),
-        config::Environment::Development => (2, 1_000_000), // Effectively no rate limit
+        config::Environment::Development => (2, 10),
     };
 
     // We Box it because Axum 0.6 requires all Layers to be Clone
