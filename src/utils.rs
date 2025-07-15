@@ -1,5 +1,7 @@
-use crate::config::{Config, Environment};
-use crate::pq_channel::{MAX_REGISTRATIONS_EXCEEDED, WsCloseCode};
+use crate::{
+    config::{Config, Environment},
+    pq_channel::{INSUFFICIENT_BTC_BALANCE, MAX_REGISTRATIONS_EXCEEDED, WsCloseCode},
+};
 use axum::{
     extract::ws::{CloseFrame, Message as WsMessage, WebSocket, close_code},
     http::HeaderValue,
@@ -156,10 +158,14 @@ pub async fn upload_to_data_layer(
             "Failed to read error response from data layer"
         );
 
-        // Check if this is the specific error we're looking for
         if error_body.contains("Proof count for BTC address exceeds limit") {
             log::error!("Maximum proof registrations exceeded for BTC address");
             return Err(MAX_REGISTRATIONS_EXCEEDED);
+        }
+
+        if error_body.contains("Bitcoin address has insufficient balance") {
+            log::error!("Insufficient BTC balance for address");
+            return Err(INSUFFICIENT_BTC_BALANCE);
         }
 
         log::error!("Data layer returned non-success status: {status} with body: {error_body}");
@@ -396,6 +402,34 @@ pub mod tests {
 
         assert!(res.is_err(), "expected Err, got {res:?}");
         assert_eq!(res.unwrap_err(), MAX_REGISTRATIONS_EXCEEDED);
+    }
+
+    #[tokio::test]
+    async fn test_upload_to_data_layer_insufficient_btc_balance() {
+        let (mut server, bitcoin_address, ml_dsa_44_address, slh_dsa_sha2_s_128_address) =
+            setup_upload_test().await;
+
+        let _m = server
+            .mock("POST", "/v1/proofs")
+            .match_header("x-api-key", "test-key")
+            .match_header("content-type", "application/json")
+            .with_status(400)
+            .with_body("{\"error\": \"Bitcoin address has insufficient balance\"}")
+            .create();
+
+        let res = upload_to_data_layer(
+            &bitcoin_address,
+            &ml_dsa_44_address,
+            &slh_dsa_sha2_s_128_address,
+            "ZmFrZV9hdHRlc3RhdGlvbg==",
+            "v1.0.0",
+            server.url().to_string().as_str(),
+            "test-key",
+        )
+        .await;
+
+        assert!(res.is_err(), "expected Err, got {res:?}");
+        assert_eq!(res.unwrap_err(), INSUFFICIENT_BTC_BALANCE);
     }
 
     #[tokio::test]
