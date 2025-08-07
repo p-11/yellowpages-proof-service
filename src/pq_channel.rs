@@ -35,6 +35,7 @@ const PROOF_REQUEST_TIMEOUT_SECS: u64 = 30; // 30 seconds for proof submission
 // Custom close code in the private range 4000-4999
 const TIMEOUT_CLOSE_CODE: u16 = 4000; // Custom code for timeout errors
 pub const MAX_REGISTRATIONS_EXCEEDED: u16 = 4001; // Custom close code for max registrations exceeded
+pub const INSUFFICIENT_BTC_BALANCE: u16 = 4002; // Custom close code for insufficient BTC balance
 
 // Constants for AES-GCM
 pub const AES_GCM_NONCE_LENGTH: usize = 12; // length in bytes
