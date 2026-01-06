@@ -45,17 +45,17 @@ fn mock_attestation_handler(
     // First try to parse as an auth attestation request
     if let Ok(auth_data) = serde_json::from_str::<AuthAttestationDocUserData>(&decoded_json) {
         // Verify the ciphertext hash is a valid base64 string of the right length
-        if let Ok(hash_bytes) = base64.decode(&auth_data.ml_kem_768_ciphertext_hash) {
-            if hash_bytes.len() == 32 {
-                // SHA256 hash is 32 bytes
-                // This is a valid auth attestation request
-                return (
-                    StatusCode::OK,
-                    [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-                    MOCK_ATTESTATION_DOCUMENT,
-                )
-                    .into_response();
-            }
+        if let Ok(hash_bytes) = base64.decode(&auth_data.ml_kem_768_ciphertext_hash)
+            && hash_bytes.len() == 32
+        {
+            // SHA256 hash is 32 bytes
+            // This is a valid auth attestation request
+            return (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                MOCK_ATTESTATION_DOCUMENT,
+            )
+                .into_response();
         }
     }
 

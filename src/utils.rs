@@ -186,7 +186,7 @@ pub async fn validate_cloudflare_turnstile_token(
     {
         TURNSTILE_TEST_SECRET_KEY_ALWAYS_PASSES.to_string()
     } else {
-        config.cf_turnstile_secret_key.to_string()
+        config.cf_turnstile_secret_key.clone()
     };
 
     let client = reqwest::Client::new();
@@ -368,7 +368,7 @@ pub mod tests {
             &slh_dsa_sha2_s_128_address,
             "ZmFrZV9hdHRlc3RhdGlvbg==",
             "v1.0.0",
-            server.url().to_string().as_str(),
+            server.url().as_str(),
             "test-key",
         )
         .await;
@@ -395,7 +395,7 @@ pub mod tests {
             &slh_dsa_sha2_s_128_address,
             "ZmFrZV9hdHRlc3RhdGlvbg==",
             "v1.0.0",
-            server.url().to_string().as_str(),
+            server.url().as_str(),
             "test-key",
         )
         .await;
@@ -423,7 +423,7 @@ pub mod tests {
             &slh_dsa_sha2_s_128_address,
             "ZmFrZV9hdHRlc3RhdGlvbg==",
             "v1.0.0",
-            server.url().to_string().as_str(),
+            server.url().as_str(),
             "test-key",
         )
         .await;
@@ -451,7 +451,7 @@ pub mod tests {
             &slh_dsa_sha2_s_128_address,
             "ZmFrZV9hdHRlc3RhdGlvbg==",
             "v1.0.0",
-            server.url().to_string().as_str(),
+            server.url().as_str(),
             "test-key",
         )
         .await;
