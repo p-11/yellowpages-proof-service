@@ -83,7 +83,7 @@ git push origin <feature|fix|chore>/title
 
 ## Security
 
-If you find a security issue or vulnerability, please file an issue here on GitHub. A maintainer will acknowledge and fix it ASAP.
+Please consult the [SECURITY.md](SECURITY.md) for more information on responsibly reporting security vulnerabilities.
 
 ## License
 
