@@ -1,5 +1,8 @@
 # yellowpages proof service
 
+> **Note**
+> This repository has been archived and is no longer maintained. No further updates, bug fixes, or pull requests will be accepted.
+
 The yellowpages proof service is a Rust-based service that is designed to be run within a Trusted Execution Environment (TEE) on AWS Nitro Enclave to validate inputs and generate cryptographic proofs of Bitcoin ownership linked to new post quantum addresses.
 
 ## Overview
